@@ -220,7 +220,8 @@ The key points are stored in increasing order by offset (and thus by
 granpos as well).
 
 The granpos offsets stored in keypoints are relative to the initializer granpos,
-which may be negative.
+which may be negative.  The first offset is computed by adding the first delta
+to the initializer.
 
 The byte offsets stored in keypoints are relative to the start of the Ogg
 bitstream segment. So if you have a physical Ogg bitstream made up of two
