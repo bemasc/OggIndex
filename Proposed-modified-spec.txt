@@ -58,7 +58,7 @@ point is intrinsically associated with exactly one stream, and stores a
 byte offset o and a granpos g. This specifies that the last page containing
 information required to render all packets after granpos g begins
 at or after byte offset o, as offset from the beginning of the Ogg segment.
-Equivalent, no data preceding byte offset o is needed to render
+Equivalently, no data preceding byte offset o is needed to render
 granpos g. The offset is not necessarily the first byte of a page, so you may
 have to scan forward, and skip pages, to find the first relevant page.
 
