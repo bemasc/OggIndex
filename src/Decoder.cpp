@@ -85,7 +85,6 @@ protected:
   bool mSetFirstGranulepos;
 
 public:
-
   ogg_int64_t mNextKeyframeThreshold; // in ms
   ogg_int64_t mGranulepos;
 
@@ -133,10 +132,12 @@ public:
     Frame(ogg_packet& packet) :
       packetno(packet.packetno),
       granulepos(packet.granulepos),
-      is_keyframe(th_packet_iskeyframe(&packet) != 0) {}
+      is_keyframe(th_packet_iskeyframe(&packet) != 0),
+      e_o_s(packet.e_o_s != 0) {}
     ogg_int64_t packetno;
     ogg_int64_t granulepos;
     bool is_keyframe;
+    bool e_o_s;
   };
   
   // List of pages in the ogg file. We use this to determine the page which
@@ -153,7 +154,7 @@ public:
     // Construct list of keyframes from page and frame info lists.
     // Need to determine frame start offsets and fill key points array.
 
-    if (mKeyFrames.size() > 0) {
+    if (mKeyFrames.size() > 0 || mFrames.size() == 0) {
       return mKeyFrames;
     }
 
@@ -209,6 +210,15 @@ public:
            mInfo.fps_denominator / mInfo.fps_numerator;
   }
 
+  const char* TheoraHeaderType(ogg_packet* packet) {
+    switch (packet->packet[0]) {
+      case 0x80: return "Ident";
+      case 0x81: return "Comment";
+      case 0x82: return "Setup";
+      default: return "UNKNOWN";
+    }
+  }
+
   bool Decode(ogg_page* page, ogg_int64_t offset) {
     assert((ogg_uint32_t)ogg_page_serialno(page) == mSerial);
     if (GotAllHeaders()) {
@@ -246,6 +256,15 @@ public:
           // Read all headers, setup decoder context.
           mCtx = th_decode_alloc(&mInfo, mSetup);
           assert(mCtx != NULL);
+        }
+        if (gOptions.GetDumpPackets()) {
+          cout << "[T] ver="
+               << (int)mInfo.version_major << "."
+               << (int)mInfo.version_minor << "."
+               << (int)mInfo.version_subminor << " "
+               << TheoraHeaderType(&packet) << " packet"
+               << (packet.e_o_s ? " eos" : "")
+               << endl;
         }
         continue;
       }      
@@ -355,13 +374,16 @@ public:
   }
 
   void DumpPacket(Frame& f) {
-    if (!gOptions.GetDumpPackets() &&
-        !gOptions.GetDumpKeyPackets())
-      return;
-    cout << "[T] " << (f.is_keyframe ? "keyframe" : "frame")
-         << " time_ms=[" << StartTime(f.granulepos) << ","
-         << EndTime(f.granulepos) << "] granulepos=" << f.granulepos
-         << " packetno=" << f.packetno << endl;
+    if (gOptions.GetDumpPackets() ||
+        (f.is_keyframe && gOptions.GetDumpKeyPackets()))
+    {
+      cout << "[T] " << (f.is_keyframe ? "keyframe" : "frame")
+           << " time_ms=[" << StartTime(f.granulepos) << ","
+           << EndTime(f.granulepos) << "] granulepos=" << f.granulepos
+           << " packetno=" << f.packetno
+           << (f.e_o_s ? " eos" : "")
+           << endl;
+    }
   }  
 
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) {
@@ -374,10 +396,14 @@ public:
     f.mGranDenom = mInfo.fps_denominator;
     f.mPreroll = 0;
     f.mGranuleShift = mInfo.keyframe_granule_shift;
-    f.mContentType = "Content-Type: video/theora\r\n";
-    assert(f.mContentType.size() == 28);
+    f.mRadix = 0;
+    f.mContentType = "video/theora";
+    f.mRole = "video/main";
+    f.mName = "video/main";
     return f;
   }
+
+
 };
 
 class VorbisDecoder : public Decoder {
@@ -410,6 +436,15 @@ public:
     return (1000 * granulepos) / mDsp.vi->rate;
   }
 
+  const char* VorbisHeaderType(ogg_packet* packet) {
+    switch (packet->packet[0]) {
+      case 0x1: return "Ident";
+      case 0x3: return "Comment";
+      case 0x5: return "Setup";
+      default: return "UNKNOWN";
+    }
+  }
+
   bool Decode(ogg_page* page, ogg_int64_t offset) {
     if (GotAllHeaders()) {
       // Reset the vorbis syntheis. This simulates what happens when we seek
@@ -432,6 +467,13 @@ public:
         ogg_int32_t ret = vorbis_synthesis_headerin(&mInfo, &mComment, &packet);
         if (ret == 0) {
           mHeadersRead++;
+        }
+        if (gOptions.GetDumpPackets()) {
+          cout << "[V] ver="
+               << (int)mInfo.version << " "
+               << VorbisHeaderType(&packet) << " packet"
+               << (packet.e_o_s ? " eos" : "")
+               << endl;
         }
         if (GotAllHeaders()) {
           ret = vorbis_synthesis_init(&mDsp, &mInfo);
@@ -470,7 +512,9 @@ public:
         if (gOptions.GetDumpKeyPackets() || gOptions.GetDumpPackets()) {
           cout << "[V] sample time_ms=[" << start_time << "," << end_time
                << "] granulepos=[" << start_granule << ","
-               << packet.granulepos << "]" << endl;
+               << packet.granulepos << "]"
+               << (packet.e_o_s ? " eos" : "")
+               << endl;
         }    
 
         if (start_time > mNextKeyframeThreshold) {
@@ -505,14 +549,16 @@ public:
     f.mGranDenom = 1;
     f.mPreroll = 2;
     f.mGranuleShift = 0;
-    f.mContentType = "Content-Type: audio/vorbis\r\n";
-    assert(f.mContentType.size() == 28);
+    f.mRadix = 0;
+    f.mContentType = "audio/vorbis";
+    f.mRole = "audio/main";
+    f.mName = "audio/main";
     return f;
   }  
 
 private:
   ogg_int32_t mHeadersRead;
-  
+
   vorbis_info mInfo;
   vorbis_comment mComment;
   vorbis_dsp_state mDsp;
@@ -583,7 +629,8 @@ public:
       start(-1),
       duration(-1),
       backlink(-1),
-      end(-1)
+      end(-1),
+      e_o_s(packet.e_o_s != 0)
     {
       if (packet.bytes > 0 && (packet.packet[0] == 0x00 || packet.packet[0] == 0x02)) {
         start = LEInt64(packet.packet+1);
@@ -598,6 +645,7 @@ public:
     ogg_int64_t duration;
     ogg_int64_t backlink;
     ogg_int64_t end;
+    bool e_o_s;
   };
   
   // List of pages in the ogg file. We use this to determine the page which
@@ -728,6 +776,21 @@ public:
     return mKeyFrames;
   }
 
+  const char* KateHeaderType(ogg_packet* packet) {
+    switch (packet->packet[0]) {
+      case 0x80: return "Ident";
+      case 0x81: return "Comment";
+      case 0x82: return "Regions";
+      case 0x83: return "Styles";
+      case 0x84: return "Curves";
+      case 0x85: return "Motions";
+      case 0x86: return "Palettes";
+      case 0x87: return "Bitmaps";
+      case 0x88: return "Fonts";
+      default: return "UNKNOWN";
+    }
+  }
+
   bool Decode(ogg_page* page, ogg_int64_t offset) {
     assert((ogg_uint32_t)ogg_page_serialno(page) == mSerial);
     if (GotAllHeaders()) {
@@ -768,6 +831,14 @@ public:
           // Read all headers, setup decoder state.
           int ret = kate_decode_init(&mCtx, &mInfo);
           assert(ret >= 0);
+        }
+        if (gOptions.GetDumpPackets()) {
+          cout << "[K] ver="
+               << (int)mInfo.bitstream_version_major << "."
+               << (int)mInfo.bitstream_version_minor << " "
+               << KateHeaderType(&packet) << " packet"
+               << (packet.e_o_s ? " eos" : "")
+               << endl;
         }
         continue;
       }
@@ -819,7 +890,9 @@ public:
     cout << "[K] " << "event"
          << " time_ms=[" << GranuleRateToMilliseconds(f.start) << ","
          << GranuleRateToMilliseconds(f.end) << "] granulepos=" << f.granulepos
-         << " packetno=" << f.packetno << endl;
+         << " packetno=" << f.packetno
+         << (f.e_o_s ? " eos" : "")
+         << endl;
   }  
 
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) {
@@ -832,10 +905,13 @@ public:
     f.mGranDenom = mInfo.gps_denominator;
     f.mPreroll = 0;
     f.mGranuleShift = mInfo.granule_shift;
-    f.mContentType = "Content-Type: application/x-kate\r\n";
-    assert(f.mContentType.size() == 34);
+    f.mRadix = 0;
+    f.mContentType = "application/x-kate";
+    f.mName = "text/caption";
+    f.mRole = "text/caption";
     return f;
   }
+
 };
 #endif
 
@@ -908,9 +984,9 @@ bool SkeletonDecoder::Decode(ogg_page* page, ogg_int64_t offset) {
       mVersionMinor = LEUint16(packet.packet + 10);
       mVersion = SKELETON_VERSION(mVersionMajor, mVersionMinor);
       if (mVersion < SKELETON_VERSION(3,0) ||
-          mVersion >= SKELETON_VERSION(4,0)) { 
+          mVersion > SKELETON_VERSION(4,0)) { 
         cerr << "FAIL: Skeleton version " << mVersionMajor << "." << mVersionMinor   
-             << " detected. I can only handle version 3.x" << endl;
+             << " detected. I can only handle version [3.x,4.0]" << endl;
         exit(-1);
       }
     }
@@ -957,14 +1033,19 @@ bool DecodeIndex(KeyFrameIndex& index, ogg_packet* packet) {
   ogg_int64_t time_denom = LEInt64(packet->packet + INDEX_TIME_DENOM_OFFSET);
   ogg_int64_t time_multiplier = 1000;
 
-  // Check that the packet's not smaller or significantly larger than
+  // Ensure that the packet's not smaller or significantly larger than
   // we expect. These cases denote a malicious or invalid num_key_points
   // field.
-  ogg_int64_t max_packet_size = INDEX_KEYPOINT_OFFSET + numKeyPoints * MAX_KEY_POINT_SIZE;
-  if (packet->bytes > max_packet_size) {
+  ogg_int64_t min_packet_size = INDEX_KEYPOINT_OFFSET + numKeyPoints * MIN_KEY_POINT_SIZE;
+  if (packet->bytes < min_packet_size) {
+    // Packet is less than the theoretical minimum size. This means that the
+    // num_key_points field is too large for the packet to possibly contain as
+    // many packets as it claims to, so the num_key_points field is probably
+    // malicious. Don't try decoding this file, we may run out of memory.
     cerr << "WARNING: Possibly malicious number of key points reported in index packet." << endl;
     return false;
   }
+  ogg_int64_t max_packet_size = INDEX_KEYPOINT_OFFSET + numKeyPoints * MAX_KEY_POINT_SIZE;
   if (max_packet_size > INT_MAX) {
     cerr << "ERROR: I can't handle index sizes greater than 2^32." << endl;
     return false;

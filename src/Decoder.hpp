@@ -51,6 +51,9 @@ using namespace std;
 // of bytes required to encode their maximum values with variable byte encoding.
 #define MAX_KEY_POINT_SIZE 24
 
+// Minimum possible size of a compressed keypoint.
+#define MIN_KEY_POINT_SIZE 2
+
 // Magic bytes for index packet.
 #define HEADER_MAGIC "index"
 #define HEADER_MAGIC_LEN (sizeof(HEADER_MAGIC) / sizeof(HEADER_MAGIC[0]))
@@ -75,8 +78,19 @@ public:
   ogg_int32_t mPreroll;
   ogg_int32_t mGranuleShift;
   
-  // "Content-Type: major/minor\r\n".
+  ogg_uint32_t mRadix;
+
+  // Skeleton message header fields.
+  string MessageHeaders() {
+    return
+      "Content-Type: " + mContentType + "\r\n" +
+      "Name: " + mName + "\r\n" +
+      "Role: " + mRole + "\r\n";
+  }
+
   string mContentType;
+  string mRole;
+  string mName;
 };
 
 // Stores info about a key point.
@@ -123,7 +137,7 @@ protected:
   
   // End time of the last frame/sample.
   ogg_int64_t mEndTime;
-  
+
   // Initialize decoder.
   Decoder(ogg_uint32_t serial);
 
@@ -163,17 +177,17 @@ typedef map<ogg_uint32_t, Decoder*> DecoderMap;
 #define SKELETON_VERSION_MINOR_OFFSET 10
 #define SKELETON_PRES_TIME_DENOM_OFFSET 20
 #define SKELETON_BASE_TIME_DENOM_OFFSET 36
-#define SKELETON_FIRST_NUMER_OFFSET 64
-#define SKELETON_FIRST_DENOM_OFFSET 72
-#define SKELETON_LAST_NUMER_OFFSET 80
-#define SKELETON_LAST_DENOM_OFFSET 88
-#define SKELETON_FILE_LENGTH_OFFSET 96
-#define SKELETON_CONTENT_OFFSET 104
+#define SKELETON_FILE_LENGTH_OFFSET 64
+#define SKELETON_CONTENT_OFFSET 72
 
 #define INDEX_SERIALNO_OFFSET 6
 #define INDEX_NUM_KEYPOINTS_OFFSET 10
-#define INDEX_TIME_DENOM_OFFSET 18
-#define INDEX_KEYPOINT_OFFSET 26
+#define INDEX_FIRST_NUMER_OFFSET 18
+#define INDEX_FIRST_DENOM_OFFSET 26
+#define INDEX_LAST_NUMER_OFFSET 34
+#define INDEX_LAST_DENOM_OFFSET 42
+#define INDEX_TIME_DENOM_OFFSET 54
+#define INDEX_KEYPOINT_OFFSET 62
 
 
 // Skeleton decoder. Must have public interface, as we use this in the
@@ -208,6 +222,8 @@ public:
   // Maps track serialno to keyframe index, storing the keyframe indexes
   // as they're read from the skeleton track.
   map<ogg_uint32_t, vector<KeyFrameInfo>*> mIndex;
+
+  ogg_uint32_t GetVersion() { return mVersion; }
 
 private:
   bool mGotAllHeaders;

@@ -76,7 +76,7 @@ public:
   
   virtual void Reset() = 0;
   
-  virtual const char* Type() { return "Unknown"; }  
+  virtual const char* Type() { return "Unknown"; }
 };
 
 
@@ -132,6 +132,7 @@ public:
     : VerifyDecoder(serial)
     , mSetup(0)
     , mHeaderPacketsRead(0)
+    , mGranulepos(-1)
   {
     th_info_init(&mInfo);
     th_comment_init(&mComment);
@@ -402,6 +403,10 @@ public:
   
   virtual const char* Type() { return "Kate"; }
 
+  ogg_int64_t GetBaseTime(ogg_page* page) {
+    return GranuleRateToTime(ogg_page_granulepos(page) >> kate_granule_shift(&mInfo));
+  }
+
   // Decode all keyframes in the given page, and return the start time of
   // the next keyframe.
   virtual ogg_int64_t Decode(ogg_page* page, ogg_int64_t& end_time) {
@@ -460,15 +465,11 @@ class Skeleton : public VerifyDecoder {
 public:
 
   KeyFrameIndex mIndex;
-  ogg_int64_t mStartTime; // in ms
-  ogg_int64_t mEndTime; // in ms
   ogg_int64_t mFileLength; // in bytes.
   ogg_uint64_t mContentOffset; // in bytes.
 
   Skeleton(ogg_uint32_t serial)
     : VerifyDecoder(serial)
-    , mStartTime(-1)
-    , mEndTime(-1)
     , mFileLength(-1)
   {
   }
@@ -500,24 +501,12 @@ public:
         ogg_uint16_t ver_maj = LEUint16(op.packet + SKELETON_VERSION_MAJOR_OFFSET);
         ogg_uint16_t ver_min = LEUint16(op.packet + SKELETON_VERSION_MINOR_OFFSET);
         ogg_uint32_t version = SKELETON_VERSION(ver_maj, ver_min);
-        if (version < SKELETON_VERSION(3,0) ||
-            version >= SKELETON_VERSION(4,0)) { 
+        if (version != SKELETON_VERSION(4,0)) { 
           cerr << "FAIL: Skeleton version " << ver_maj << "." <<ver_min   
                << " detected. I can only validate version "
                << SKELETON_VERSION_MAJOR << "." << SKELETON_VERSION_MINOR << endl;
           exit(-1);
         }
-
-        // Decode the 3.x header fields, for validation later.
-        // TODO: How can I validate these further?
-        ogg_int64_t start_num = LEUint64(op.packet + SKELETON_FIRST_NUMER_OFFSET);
-        ogg_int64_t start_denom = LEUint64(op.packet + SKELETON_FIRST_DENOM_OFFSET);
-        mStartTime = (start_denom == 0) ? -1 : (start_num * 1000) / start_denom;
-
-        ogg_int64_t last_num = LEUint64(op.packet + SKELETON_LAST_NUMER_OFFSET);
-        ogg_int64_t last_denom = LEUint64(op.packet + SKELETON_LAST_DENOM_OFFSET);
-        mEndTime = (last_denom == 0) ? -1 : (last_num * 1000) / last_denom;
-
         mContentOffset = LEUint64(op.packet + SKELETON_CONTENT_OFFSET);
         if (mContentOffset == 0) {
           cerr << "Verification Failure: content offset is 0" << endl;
@@ -525,13 +514,6 @@ public:
         }
 
         mFileLength = LEUint64(op.packet + SKELETON_FILE_LENGTH_OFFSET);
-
-        if (mEndTime <= mStartTime) {
-          cerr << "Verification Failure: end_time (" << mEndTime
-               << ") <= start_time (" << mStartTime << ")." << endl;
-          return false;
-        }
-        
         continue;
       }
       
@@ -636,6 +618,11 @@ bool ValidateIndexedOgg(const string& filename) {
     }
   }
 
+  if (!skeleton) {
+    cerr << "FAIL: No skeleton track so therefore no keyframe indexes!" << endl;
+    return false;
+  }
+
   if (skeleton->mContentOffset != contentOffset) {
     cerr << "FAIL: skeleton header's reported content offset (" << skeleton->mContentOffset
          << ") does not match actual content offset (" << contentOffset << ")" << endl;
@@ -676,7 +663,6 @@ bool ValidateIndexedOgg(const string& filename) {
          << " index has " << v->size() << " keypoints." << endl;
 
     bool valid = true;
-    ogg_int64_t prev_pres_time = 0;
     for (ogg_uint32_t i=0; i<v->size(); i++) {
     
       KeyFrameInfo& keypoint = v->at(i);
@@ -759,45 +745,19 @@ bool ValidateIndexedOgg(const string& filename) {
       }
 
 #ifdef HAVE_KATE
-      // The time of a Kate index entry does not necessarily match
-      // the start time of the event on the page that entry points to, e.g:
-      //
-      //                       1     1
-      // time:      0      7   1     8
-      // event 1:   +------+
-      // event 2:              +------+
-      //
-      // Here, event 1 starts at time 0, ends at time 7, event 2 starts at 11,
-      // ends at 18.
-      // The indexed points will be:
-      // time 0: point to event 1's page.
-      // time 7: point to event 2's page
-      // This is because seeking at time 7, no event is active as event 1 just
-      // ended, so event 2 is the next page that we need when starting at time
-      // 7.
-      // However, event 2's start time is 11, not 7, as there is a gap.
-      
-      // We can't just assume a kate key point is invalid if its reported time
-      // doesn't match the presentation time of the event which can be decoded
-      // from this page. We instead will consider a keypoint valid if its
-      // time is after the previous keypoints, but less than or equal to the
-      // presentation time at the current offset.
-      if (decoder == kate && keypoint.mTime != pres_time) {
-        if (keypoint.mTime > pres_time || keypoint.mTime < prev_pres_time) {
-          cerr << "FAIL: Kate keypoint " << i << " for page at offset "
+      if (decoder == kate) {
+        // We get the granpos of the page linked to, and check that the base part of the granpos
+        // is higher or equal to the time of the keypoint
+        ogg_int64_t base_time = kate->GetBaseTime(&page);
+        if (base_time > pres_time) {
+          cerr << "FAIL: kate keypoint " << i << " for page at offset "
                << keypoint.mOffset << " reports start time of "
-               << keypoint.mTime << " but should be" << pres_time << endl;
+               << keypoint.mTime << " but should be greater of equal to "
+               << base_time << endl;
           valid = false;
-        } else {
-          cerr << "WARNING: Kate keypoint " << i << " (offset="
-               << keypoint.mOffset << ", time=" << keypoint.mTime << ")"
-               << " doesn't match time of " << pres_time
-               << ", but is it's *probably* ok..."
-               << endl;
         }
       }
 #endif
-      prev_pres_time = pres_time;
     }
     if (valid) {
       cout << decoder->Type() << "/" << serialno
