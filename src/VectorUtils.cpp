@@ -20,21 +20,25 @@ static void round_together (vector<ogg_int64_t>* first_out,
                             vector<ogg_int64_t>* second_out,
                             vector<ogg_int64_t>* first_in,
                             vector<ogg_int64_t>* second_in,
-                            unsigned char shift) {
-  ogg_int64_t i, mask, offset, tmp1, tmp2;
+                            unsigned char shift1,
+                            unsigned char shift2) {
+  ogg_int64_t i, mask1, mask2, offset2, tmp1, tmp2;
   assert(first_in.size() == second_in.size());
   if (first_in.size() == 0) { 
     return;
   }
-  offset = 1;
-  offset = (offset<<shift) - 1; //paranoia about 32bit vs. 64bit shift
-  mask = ~offset;
+  mask1 = 1;
+  mask1 = ~((mask1<<shift1) - 1);
+  
+  offset2 = 1;
+  offset2 = (offset2<<shift2) - 1; //paranoia about 32bit vs. 64bit shift
+  mask2 = ~offset2;
 
-  first_out->push_back(first_in[0] & mask);
-  second_out->push_back((second_in[0] + offset) & mask);
+  first_out->push_back(first_in[0] & mask1);
+  second_out->push_back((second_in[0] + offset2) & mask2);
   for(i = 1; i < first_in.size(); i++) {
-    tmp1 = first_in[i] & mask;
-    tmp2 = (second_in[i] + offset) & mask;
+    tmp1 = first_in[i] & mask1;
+    tmp2 = (second_in[i] + offset2) & mask2;
     if (tmp1 > first_out->back() && tmp2 > second_out->back()) {
       first_out->push_back(tmp1);
       second_out->push_back(tmp2);
@@ -124,3 +128,5 @@ static ogg_int64_t measure_bmax(vector<ogg_int64_t>* offsets,
   }
   return b_max;
 }
+
+static 
