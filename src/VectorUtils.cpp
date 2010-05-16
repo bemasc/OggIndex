@@ -11,8 +11,8 @@ using namespace std;
 
 // Rounds off the shift LSBs of first_in and second_in, placing the outputs
 // in first_out and second_out.  first_in and second_in must be
-// nondecreasing, and have the same length. first_in is rounded up,
-// while second_in is rounded down.  If rounding causes either first or
+// nondecreasing, and have the same length. first_in is rounded down,
+// while second_in is rounded up.  If rounding causes either first or
 // second to produce two consecutive entries that are equal, the later
 // entry will be discarded, as will the corresponding entry in the other
 // vector.
@@ -30,11 +30,11 @@ static void round_together (vector<ogg_int64_t>* first_out,
   offset = (offset<<shift) - 1; //paranoia about 32bit vs. 64bit shift
   mask = ~offset;
 
-  first_out->push_back((first_in[0] + offset) & mask);
-  second_out->push_back(second_in[0] & mask);
+  first_out->push_back(first_in[0] & mask);
+  second_out->push_back((second_in[0] + offset) & mask);
   for(i = 1; i < first_in.size(); i++) {
-    tmp1 = (first_in[i] + offset) & mask;
-    tmp2 = second_in[i] & mask;
+    tmp1 = first_in[i] & mask;
+    tmp2 = (second_in[i] + offset) & mask;
     if (tmp1 > first_out->back() && tmp2 > second_out->back()) {
       first_out->push_back(tmp1);
       second_out->push_back(tmp2);
@@ -79,8 +79,8 @@ static void shift_integrate (vector<ogg_int64_t>* integrated,
 
 // Given a RangeMap m, split out its granuleposes and offset start points
 // into two new vectors.
-static void split_rangemap(vector<ogg_int64_t>* gps,
-                           vector<ogg_int64_t>* offsets,
+static void split_rangemap(vector<ogg_int64_t>* offsets,
+                           vector<ogg_int64_t>* gps,
                            RangeMap* m) {
   RangeMap::iterator it = m->begin();
   for(;it< m->end(); ++it) {
@@ -94,8 +94,8 @@ static void split_rangemap(vector<ogg_int64_t>* gps,
 // Given vectors of granulepos and start offsets, as well as the global
 // b_max, construct the tightest possible safe RangeMap
 static void merge_vectors(RangeMap * m,
-                          vector<ogg_int64_t>*gps,
                           vector<ogg_int64_t>*offsets,
+                          vector<ogg_int64_t>*gps,
                           ogg_int64_t b_max) {
   ogg_int64_t i;
   assert(m->size() == 0);
@@ -109,8 +109,8 @@ static void merge_vectors(RangeMap * m,
 // Return the number of bytes you must read beyond offsets[i+1] when looking
 // for a granpos between gps[i] and gps[i+1] in order to ensure that you have
 // captured sufficient data.
-static ogg_int64_t measure_bmax(vector<ogg_int64_t>* gps,
-                                vector<ogg_int64_t>* offsets,
+static ogg_int64_t measure_bmax(vector<ogg_int64_t>* offsets,
+                                vector<ogg_int64_t>* gps,
                                 RangeMap* m) {
   RangeMap::iterator it;
   ogg_int64_t i = 0, b_max = 0;
