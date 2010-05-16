@@ -137,9 +137,6 @@ protected:
   // i.e. the granulepos that maximizes GranuleposToTime()
   ogg_int64_t mLastGranulepos;
   
-  // Initializer granulepos, from which to start decoding deltas
-  ogg_int64_t mInitGranulepos;
-
   // Initialize decoder.
   Decoder(ogg_uint32_t serial);
 
@@ -166,6 +163,7 @@ public:
     return GranuleposToTime(GetFisboneInfo().mStartGran);
   }
   ogg_int64_t GetEndTime() { return GranuleposToTime(mLastGranulepos); }
+  ogg_int64_t GetLastGranulepos() { return mLastGranulepos; }
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) = 0;
   ogg_uint32_t GetSerial() { return mSerial; }
 
@@ -192,8 +190,9 @@ typedef map<ogg_uint32_t, Decoder*> DecoderMap;
 #define INDEX_OFFSET_SHIFT 28
 #define INDEX_OFFSET_RICE_PARAM 29
 #define INDEX_MAX_EXCESS_BYTES 30
-#define INDEX_INIT_GRANPOS 38
-#define INDEX_SEEKPOINT_OFFSET 46
+#define INDEX_INIT_OFFSET 38
+#define INDEX_INIT_GRANPOS 46
+#define INDEX_SEEKPOINT_OFFSET 54
 
 // Skeleton decoder. Must have public interface, as we use this in the
 // skeleton encoder as well.
