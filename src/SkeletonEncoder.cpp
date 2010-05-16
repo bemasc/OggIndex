@@ -49,6 +49,8 @@
 #include "Options.hpp"
 #include "Utils.hpp"
 #include "Decoder.hpp"
+#include "VectorUtils.hpp"
+#include "RiceCode.hpp"
 
 using namespace std;
 
@@ -57,6 +59,15 @@ using namespace std;
 #define FISBONE_MAGIC "fisbone"
 #define FISBONE_MAGIC_LEN (sizeof(FISBONE_MAGIC) / sizeof(FISBONE_MAGIC[0]))
 #define FISBONE_BASE_SIZE 56
+
+// FIXME: User should be able to control the granularity.  Granularity
+// should adapt to available size in one-pass mode.  Optimal granularity
+// settings are coupled, with similar error in both time and space.
+
+// Temporal quantization of 16 samples  FIXME: Should be in terms of time.
+#define GRANPOS_QUANT (4)
+// Spatial granularity of 64 Kibibytes
+#define OFFSET_QUANT (16)
 
 static bool
 IsIndexable(Decoder* decoder) {
@@ -95,7 +106,9 @@ SkeletonEncoder::SkeletonEncoder(DecoderMap& decoders,
     mFileLength(fileLength),
     mOldSkeletonLength(oldSkeletonLength),
     mPacketCount(0),
-    mContentOffset(contentOffset)
+    mContentOffset(contentOffset),
+    mGranuleposShift(0),
+    mOffsetShift(OFFSET_QUANT)
 {
   DecoderMap::iterator itr = decoders.begin();
   while (itr != decoders.end()) {
@@ -196,76 +209,6 @@ SkeletonEncoder::AddEosPacket() {
   mIndexPackets.push_back(eos);
 }
 
-static int bits_required(ogg_int64_t n) {
-  int count = 0;
-  while (n) {
-    n = n >> 1;
-    count++;
-  }
-  return count;
-}
-
-static int bytes_required(ogg_int64_t n) {
-  int bits = bits_required(n);
-  int bytes = bits / 7;
-  return bytes + (((bits % 7) != 0 || bits == 0) ? 1 : 0);
-}
-
-static ogg_int64_t compressed_length(const vector<KeyFrameInfo>& K) {
-  ogg_int64_t length = 0;
-  if (K.size() == 0) {
-    return 0;
-  }
-  length = bytes_required(K[0].mOffset) + bytes_required(K[0].mTime);
-  for (unsigned i=1; i<K.size(); i++) {
-    ogg_int64_t off_diff = K[i].mOffset - K[i-1].mOffset;
-    ogg_int64_t time_diff = K[i].mTime - K[i-1].mTime;
-    length += bytes_required(off_diff) + bytes_required(time_diff);
-  }
-  return length;
-}
-
-unsigned char*
-ReadVariableLength(unsigned char* p, ogg_int64_t* num) {
-  *num = 0;
-  int shift = 0;
-  ogg_int64_t byte = 0;
-  do {
-    byte = (ogg_int64_t)(*p);
-    *num |= ((byte & 0x7f) << shift);
-    shift += 7;
-    p++;
-  } while ((byte & 0x80) != 0x80);
-  return p;
-}
-
-template<class T>
-unsigned char*
-WriteVariableLength(unsigned char* p, const unsigned char* limit, const T n)
-{
-  #if _DEBUG
-  unsigned char* before_p = p;
-  #endif
-  T k = n;
-  do {
-    unsigned char b = (unsigned char)(k & 0x7f);
-    k >>= 7;
-    if (k == 0) {
-      // Last byte, add terminating bit.
-      b |= 0x80;
-    }
-    *p = b;
-    p++;
-  } while (k && p < limit);
-
-#if _DEBUG
-  ogg_int64_t t;
-  ReadVariableLength(before_p, &t);
-  assert(t == n);
-#endif
-  return p;
-}
-
 const char* sStreamType[] = {
   "Unknown",
   "Vorbis",
@@ -283,13 +226,33 @@ SkeletonEncoder::ConstructIndexPackets() {
     memset(packet, 0, sizeof(ogg_packet));
     
     Decoder* decoder = mDecoders[i];
-    const vector<KeyFrameInfo>& keyframes = decoder->GetKeyframes();
+    const RangeMap& seekblocks = decoder->GetSeekBlocks();
     
-    const ogg_int32_t uncompressed_size = INDEX_KEYPOINT_OFFSET +
-                                  (int)keyframes.size() * 20;
+    FisboneInfo info = decoder->GetFisboneInfo();
+    mGranuleposShift = info.mGranuleShift + GRANPOS_QUANT;
+    vector<ogg_int64_t> gps, offsets;
+    split_rangemap(&offsets, &gps, &seekblocks);
+    vector<ogg_int64_t> gps_rounded, offsets_rounded;
+    round_together(&offsets_rounded, &gps_rounded, &offsets, &gps,
+                   mOffsetShift, mGranuleposShift, decoder->GetLastGranulepos());
+    ogg_int64_t b_max;
+    b_max = measure_bmax(&offsets_rounded, &gps_rounded, &seekblocks);
+    ogg_int64_t init_offset, init_granpos;
+    vector<ogg_int64_t> gp_diffs, offset_diffs;
+    differentiate(&offset_diffs, &init_offset, &offsets_rounded, mOffsetShift);
+    differentiate(&gp_diffs, &init_granpos, &gps_rounded, mGranuleposShift);
+    unsigned char offset_rice_param, gp_rice_param;
+    offset_rice_param = optimal_rice_parameter(&offset_diffs);
+    gp_rice_param = optimal_rice_parameter(&gp_diffs);
+    vector<char> bits;
+    rice_encode_alternate(&bits, &offset_diffs, &gp_diffs,
+                          offset_rice_param, gp_rice_param);
+    
+    const ogg_int32_t uncompressed_size = INDEX_SEEKPOINT_OFFSET +
+                                  (int)seekblocks.size() * 16;
 
     ogg_int64_t compressed_size =
-      INDEX_KEYPOINT_OFFSET + compressed_length(keyframes);
+      INDEX_SEEKPOINT_OFFSET + tobytes(bits.size());
 
     double savings = ((double)compressed_size / (double)uncompressed_size) * 100.0;
     cout << sStreamType[mDecoders[i]->Type()] << "/" << mDecoders[i]->GetSerial()
@@ -315,42 +278,23 @@ SkeletonEncoder::ConstructIndexPackets() {
     WriteLEUint64(packet->packet + INDEX_NUM_KEYPOINTS_OFFSET,
                   (ogg_uint64_t)keyframes.size());
     
-    // Write start time and end time.
-    WriteLEInt64(packet->packet + INDEX_FIRST_NUMER_OFFSET, decoder->GetStartTime());
-    WriteLEInt64(packet->packet + INDEX_FIRST_DENOM_OFFSET, 1000);
+    WriteLEInt64(packet->packet + INDEX_LAST_GRANPOS,
+                                                  decoder->GetLastGranulepos());
 
-    WriteLEInt64(packet->packet + INDEX_LAST_NUMER_OFFSET, decoder->GetEndTime());
-    WriteLEInt64(packet->packet + INDEX_LAST_DENOM_OFFSET, 1000);
+    WriteUint8(packet->packet + INDEX_GRANPOS_SHIFT, mGranuleposShift);
+    WriteUint8(packet->packet + INDEX_GRANPOS_RICE_PARAM, gp_rice_param);
+    WriteUint8(packet->packet + INDEX_OFFSET_SHIFT, mOffsetShift);
+    WriteUint8(packet->packet + INDEX_OFFSET_RICE_PARAM, offset_rice_param);
 
-    // Timestamp denominator.
-    WriteLEInt64(packet->packet + INDEX_TIME_DENOM_OFFSET, 1000);
+    WriteLEInt64(packet->packet + INDEX_MAX_EXCESS_BYTES, b_max);
 
-    p = packet->packet + INDEX_KEYPOINT_OFFSET;
+    WriteLEInt64(packet->packet + INDEX_INIT_OFFSET, init_offset);
+    WriteLEInt64(packet->packet + INDEX_INIT_GRANPOS, init_granpos);
 
-    ogg_int64_t prev_offset = 0;
-    ogg_int64_t prev_time = 0;
-    const unsigned char* limit = packet->packet + compressed_size;
-    for (ogg_uint32_t j=0; j<keyframes.size(); j++) {
-      const KeyFrameInfo& k = keyframes[j];
+    p = packet->packet + INDEX_SEEKPOINT_OFFSET;
 
-      ogg_int64_t off_diff = k.mOffset - prev_offset;
-      ogg_int64_t time_diff = k.mTime - prev_time;
-
-      unsigned char* expected = p + bytes_required(off_diff);
-      p = WriteVariableLength(p, limit, off_diff);
-      assert(p == expected);
-
-      expected = p + bytes_required(time_diff);
-      p = WriteVariableLength(p, limit, time_diff);
-      assert(p == expected);
-
-      prev_offset = k.mOffset;
-      prev_time = k.mTime;
-
-    }
+    squeeze_bits(p, bits);
     
-    assert(p == packet->packet + compressed_size);
-
     packet->packetno = mPacketCount;
     mPacketCount++;
 
