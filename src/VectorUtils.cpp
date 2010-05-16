@@ -85,14 +85,19 @@ static void shift_integrate (vector<ogg_int64_t>* integrated,
 // into two new vectors.
 static void split_rangemap(vector<ogg_int64_t>* offsets,
                            vector<ogg_int64_t>* gps,
-                           RangeMap* m) {
+                           RangeMap* m,
+                           ogg_int64_t max_granpos) {
   RangeMap::iterator it = m->begin();
-  for(;it< m->end(); ++it) {
+  for(;it < m->end(); ++it) {
     if (it->second.start > offsets->back()) {
       gps->push_back(it->first);
       offsets->push_back(it->second.start);
     }
   }
+  // Add one more point at the end, to ensure finite b_max.
+  --it;
+  gps->push_back(max_granpos+1);
+  offsets->push_back(it->second.end);
 }
 
 // Given vectors of granulepos and start offsets, as well as the global
@@ -128,5 +133,3 @@ static ogg_int64_t measure_bmax(vector<ogg_int64_t>* offsets,
   }
   return b_max;
 }
-
-static 
