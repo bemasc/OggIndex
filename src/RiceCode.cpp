@@ -13,6 +13,11 @@ static ogg_uint64_t rice_bits_required(ogg_uint64_t value,
   return bits + value/cutoff;
 }
 
+// Returns the number of bytes needed to store n bits.
+static ogg_uint64_t tobytes(ogg_uint64_t n) {
+  return (n+7)/8;
+}
+
 static ogg_uint64_t rice_total_bits(vector<ogg_int64_t>* values,
                                     unsigned char rice_param) {
   ogg_int64_t total=0, i=0;
