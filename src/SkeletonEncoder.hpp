@@ -80,6 +80,9 @@ private:
   vector<ogg_packet*> mIndexPackets;
   vector<ogg_page*> mIndexPages;
   ogg_uint64_t mContentOffset;
+
+  unsigned char mGranuleposShift;
+  unsigned char mOffsetShift;
   
   void ConstructIndexPackets();
 
