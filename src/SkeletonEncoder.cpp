@@ -190,11 +190,6 @@ SkeletonEncoder::Encode() {
 
   // Adjust index packets' page offsets to account for extra file length.
   CorrectOffsets();
-  
-  // Reconstruct index pages, their contents have changed because page
-  // offsets change when we add stuff to the start of the file.
-  ConstructPages();
-
 
   return true;
 }
@@ -384,38 +379,9 @@ SkeletonEncoder::CorrectOffsets() {
   // this much.
   ogg_int64_t lengthDiff = fileLength - mFileLength;
   assert(lengthDiff == (GetTrackLength() - mOldSkeletonLength));
-
-  // First determine by how much the file will grow when we update all the
-  // offsets.
-  ogg_int64_t extra_bytes = 0;
-  for (ogg_uint32_t idx=0; idx<mIndexPackets.size(); idx++) {
-    ogg_packet* packet = mIndexPackets[idx];
-    assert(packet);
-    
-    if (!IsIndexPacket(packet)) {
-      continue;
-    }
-
-    unsigned char* p = packet->packet + INDEX_KEYPOINT_OFFSET;
-    if (p >= packet->packet + packet->bytes) {
-      continue;
-    }
-    ogg_int64_t offset = 0;
-    p = ReadVariableLength(p, &offset);
-
-    // If increasing the first keypoint's offset field means it needs more
-    // bytes to be encoded, increase the size of the index to accomodate this.
-    int adjusted_bytes_required = bytes_required(offset + lengthDiff);
-    int existing_bytes_required = bytes_required(offset);
-    if (adjusted_bytes_required != existing_bytes_required) {
-      extra_bytes += adjusted_bytes_required - existing_bytes_required;
-    }
-  }
-  lengthDiff += extra_bytes;
-  fileLength += extra_bytes;
   mContentOffset += lengthDiff;
 
-  // Correct the offset of the first keyframe in every track by how much
+  // Correct the initial offset in every track by how much
   // the offsets have changed.
   for (ogg_uint32_t idx=0; idx<mIndexPackets.size(); idx++) {
     ogg_packet* packet = mIndexPackets[idx];
@@ -425,58 +391,9 @@ SkeletonEncoder::CorrectOffsets() {
       continue;
     }
 
-    unsigned char* p = packet->packet + INDEX_KEYPOINT_OFFSET;
-    if (p >= packet->packet + packet->bytes) {
-      continue;
-    }
-    ogg_int64_t offset = 0;
-    p = ReadVariableLength(p, &offset);
-
-    ogg_uint32_t existing_checksum = LEUint32(p);
-    ogg_int64_t existing_time_diff = 0;
-    ReadVariableLength(p + 4, &existing_time_diff);
-    ogg_int64_t existing_offset = offset;
-
-    // If increasing the first keypoint's offset field means it needs more
-    // bytes to be encoded, increase the size of the index to accomodate this.
-    int adjusted_bytes_required = bytes_required(offset + lengthDiff);
-    int existing_bytes_required = bytes_required(offset);
-    if (adjusted_bytes_required != existing_bytes_required) {
-      // We don't have enough room to write the adjusted offset back into the
-      // variable-length encoded keypoint data. Make the packet bigger.
-      int diff = adjusted_bytes_required - existing_bytes_required;
-      unsigned char* q = new unsigned char[packet->bytes + diff];
-
-      // Copy up to the keypoints into the new packet.
-      memcpy(q, packet->packet, INDEX_KEYPOINT_OFFSET);
-
-      // Copy from after the first keypoint's offset until the end into
-      // the new packet.
-      memcpy(q + INDEX_KEYPOINT_OFFSET + adjusted_bytes_required,
-             packet->packet + INDEX_KEYPOINT_OFFSET + existing_bytes_required,
-             packet->bytes - INDEX_KEYPOINT_OFFSET - existing_bytes_required);
-
-      delete packet->packet;
-      packet->packet = q;
-      assert(mIndexPackets[idx]->packet == q);
-      packet->bytes += diff;
-    }
-
-    // Write the adjusted 
-    offset += lengthDiff;
-    WriteVariableLength(packet->packet + INDEX_KEYPOINT_OFFSET,
-                        packet->packet + packet->bytes,
-                        offset);
-
-    ogg_int64_t new_offset = 0;
-    unsigned char* j = ReadVariableLength(packet->packet + INDEX_KEYPOINT_OFFSET, &new_offset);
-    ogg_uint32_t new_checksum = LEUint32(j);
-    ogg_int64_t new_time_diff = 0;
-    ReadVariableLength(j + 4, &new_time_diff);
-
-    assert(existing_offset + lengthDiff == new_offset);
-    assert(existing_checksum == new_checksum);
-    assert(existing_time_diff == new_time_diff);
+    unsigned char* p = packet->packet + INDEX_INIT_OFFSET;
+    ogg_int64_t existing_offset = LEUint64(p);
+    WriteLEUint64(p, existing_offset + lengthDiff)
   }
 
   // First correct the BOS packet's segment length field.
