@@ -91,6 +91,21 @@ static void split_rangemap(vector<ogg_int64_t>* gps,
   }
 }
 
+// Given vectors of granulepos and start offsets, as well as the global
+// b_max, construct the tightest possible safe RangeMap
+static void merge_vectors(RangeMap * m,
+                          vector<ogg_int64_t>*gps,
+                          vector<ogg_int64_t>*offsets,
+                          ogg_int64_t b_max) {
+  ogg_int64_t i;
+  assert(m->size() == 0);
+  RangeMap::iterator it = m->end();
+  for(i=0; i+1 < gps->size(); i++) {
+    OffsetRange r={offsets[i], offsets[i+1]+b_max};
+    it = m->insert(it,RangePair(gps[i],r));
+  }
+}
+
 // Return the number of bytes you must read beyond offsets[i+1] when looking
 // for a granpos between gps[i] and gps[i+1] in order to ensure that you have
 // captured sufficient data.
