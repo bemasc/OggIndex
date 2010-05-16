@@ -359,6 +359,15 @@ WriteLEUint16(unsigned char* p, const ogg_uint16_t num)
   return p + 2;
 }
 
+unsigned char*
+WriteUint8(unsigned char* p, const unsigned char num)
+{
+  assert(p);
+  p[0] = num;
+  return p + 1;
+}
+
+
 ogg_uint64_t
 LEUint64(unsigned char* p)
 {

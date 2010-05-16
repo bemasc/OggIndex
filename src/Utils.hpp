@@ -155,6 +155,9 @@ unsigned char*
 WriteLEUint16(unsigned char* p, const ogg_uint16_t num);
 
 unsigned char*
+WriteUint8(unsigned char* p, const unsigned char num);
+
+unsigned char*
 ReadVariableLength(unsigned char* p, ogg_int64_t* num);
 
 template<class T>
