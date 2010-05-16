@@ -86,6 +86,13 @@ protected:
   // started.  If mContinuedStartOffset==-1, no packet has been observed
   // that could possibly have held the first part of a continued packet.
   ogg_int64_t mContinuedStartOffset;
+  
+  // mCurrentBackref is the number of previous packets required to decode the
+  // most recently observed packet.  Together with mCurrentPacket it describes
+  // the granulepos of the most recently seen packet
+  ogg_int64_t mCurrentBackref;
+  // mMaxBackref is the maximum backref, 2^(granuleshift) - 1.
+  ogg_int64_t mMaxBackref;
 public:
   TheoraDecoder(ogg_uint32_t serial) :
     Decoder(serial),
@@ -219,6 +226,9 @@ public:
           // Read all headers, setup decoder context.
           mCtx = th_decode_alloc(&mInfo, mSetup);
           assert(mCtx != NULL);
+          mMaxBackref = (1<<mInfo.keyframe_granule_shift) - 1;
+          mCurrentBackref = mMaxBackref;
+          mCurrentPacketnum = 0;
         }
         if (gOptions.GetDumpPackets()) {
           cout << "[T] ver="
@@ -244,10 +254,23 @@ public:
         r.start = offset;
       }
       r.end = end_offset;
+      
+      int packets_remaining = ogg_page_packets(page) - num_packets;
+      ogg_int64_t packetnum = (page_granulepos>>mInfo.keyframe_granule_shift)
+                                                            - packets_remaining;
+      if (th_packet_iskeyframe(&packet)) {
+        mCurrentBackref = 0;
+      } else {
+        mCurrentBackref = min(mCurrentBackref+1, mMaxBackref);
+      }
+      
+      ogg_int64_t gp_estimate = (packetnum<<mInfo.keyframe_granule_shift)
+                                                              + mCurrentBackref;
+      
       if (it->second.start != r.start || it->second.end != r.end) {
         // If this packet does not have the same range as the preceding
         // packet, then add the new range to the map.
-        it = mReadRange.insert(it, RangePair(packet.granulepos,r));
+        it = mReadRange.insert(it, RangePair(gp_estimate,r));
       }
     } // end while packetout.
 
@@ -262,6 +285,7 @@ public:
       // have started earlier.)
       mContinuedStartOffset = offset;
     }
+    mLastGranulepos = page_granulepos;
     return true;
   }
 
