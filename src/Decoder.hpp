@@ -46,14 +46,6 @@
 
 using namespace std;
 
-// Maximum possible size of one uncompressed keypoint entry in the index. This
-// takes into account the maximum possible values for all fields, and the number
-// of bytes required to encode their maximum values with variable byte encoding.
-#define MAX_KEY_POINT_SIZE 24
-
-// Minimum possible size of a compressed keypoint.
-#define MIN_KEY_POINT_SIZE 2
-
 // Magic bytes for index packet.
 #define HEADER_MAGIC "index"
 #define HEADER_MAGIC_LEN (sizeof(HEADER_MAGIC) / sizeof(HEADER_MAGIC[0]))
@@ -65,6 +57,7 @@ public:
   FisboneInfo()
     : mGranNumer(0)
     , mGranDenom(0)
+    , mStartGran(0)
     , mPreroll(0)
     , mGranuleShift(0)
   {}
@@ -74,6 +67,8 @@ public:
 
   // Granulerate denominator.
   ogg_int64_t mGranDenom;  
+
+  ogg_int64_t mStartGran;
   
   ogg_int32_t mPreroll;
   ogg_int32_t mGranuleShift;
@@ -93,27 +88,33 @@ public:
   string mName;
 };
 
-// Stores info about a key point.
-class KeyFrameInfo {
-public:
-  KeyFrameInfo() : mOffset(0), mTime(-1) {}
+struct OffsetRange {
+  // Offset of beginning of range in bytes.
+  ogg_int64_t start;
 
-  KeyFrameInfo(ogg_int64_t offset, ogg_int64_t time) :
-    mOffset(offset),
-    mTime(time) {}
-  ogg_int64_t mOffset; // In bytes from beginning of file.
-  ogg_int64_t mTime; // In milliseconds.
-};
+  // Offset of end of range in bytes.
+  // Special value end==-1 indicates that the endpoint is not yet
+ // known.
+  ogg_int64_t end;
+}
 
-// Maps a track's serialno to its keyframe index.
-typedef map<ogg_uint32_t, vector<KeyFrameInfo>*> KeyFrameIndex;
+// A pair of a granulepos and a range of bytes
+typedef pair<ogg_int64_t,OffsetRange> RangePair;
 
-// Free's all memory stored in the key frame index.
-void ClearKeyframeIndex(KeyFrameIndex& index);
+// A map from granulepos to byte ranges.  If a range is not specified
+// for a granulepos g, the range associated with g
+// is the one mapped to the largest granulepos less than g.
+typedef map<ogg_int64_t,OffsetRange> RangeMap;
 
-// Decodes an index packet, storing the decoded index in the KeyFrameIndex,
+// Maps a track's serialno to its seek range map.
+typedef map<ogg_uint32_t, RangeMap*> SeekBlockIndex;
+
+// Frees all memory stored in the seek block index.
+void ClearSeekBlockIndex(SeekBlockIndex& index);
+
+// Decodes an index packet, storing the decoded index in the SeekBlockIndex,
 // mapped to by the track's serialno.
-bool DecodeIndex(KeyFrameIndex& index, ogg_packet* packet);
+bool DecodeIndex(SeekBlockIndex& index, ogg_packet* packet);
 
 enum StreamType {
   TYPE_UNKNOWN = 0,
@@ -132,11 +133,12 @@ protected:
   // Serial of the stream we're decoding.
   ogg_uint32_t mSerial;
   
-  // Presentation time of the first frame/sample.
-  ogg_int64_t mStartTime;
+  // Last granulepos of any packet in this stream _in presentation order_
+  // i.e. the granulepos that maximizes GranuleposToTime()
+  ogg_int64_t mLastGranulepos;
   
-  // End time of the last frame/sample.
-  ogg_int64_t mEndTime;
+  // Initializer granulepos, from which to start decoding deltas
+  ogg_int64_t mInitGranulepos;
 
   // Initialize decoder.
   Decoder(ogg_uint32_t serial);
@@ -154,14 +156,16 @@ public:
   // Returns true when we've decoded all header packets.
   virtual bool GotAllHeaders() = 0;
 
-  // Returns the keyframes for indexing. Call this after the entire stream
+  // Returns the seek blocks for indexing. Call this after the entire stream
   // has been decoded.
-  virtual const vector<KeyFrameInfo>& GetKeyframes() = 0;
+  virtual const RangeMap& GetSeekBlocks() = 0;
 
   virtual StreamType Type() = 0;
   virtual const char* TypeStr() = 0;
-  ogg_int64_t GetStartTime() { return mStartTime; }
-  ogg_int64_t GetEndTime() { return mEndTime; }
+  ogg_int64_t GetStartTime() {
+    return GranuleposToTime(GetFisboneInfo().mStartGran);
+  }
+  ogg_int64_t GetEndTime() { return GranuleposToTime(mLastGranulepos); }
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) = 0;
   ogg_uint32_t GetSerial() { return mSerial; }
 
@@ -181,14 +185,15 @@ typedef map<ogg_uint32_t, Decoder*> DecoderMap;
 #define SKELETON_CONTENT_OFFSET 72
 
 #define INDEX_SERIALNO_OFFSET 6
-#define INDEX_NUM_KEYPOINTS_OFFSET 10
-#define INDEX_FIRST_NUMER_OFFSET 18
-#define INDEX_FIRST_DENOM_OFFSET 26
-#define INDEX_LAST_NUMER_OFFSET 34
-#define INDEX_LAST_DENOM_OFFSET 42
-#define INDEX_TIME_DENOM_OFFSET 54
-#define INDEX_KEYPOINT_OFFSET 62
-
+#define INDEX_NUM_SEEKPOINTS_OFFSET 10
+#define INDEX_LAST_GRANPOS 18
+#define INDEX_GRANPOS_SHIFT 26
+#define INDEX_GRANPOS_RICE_PARAM 27
+#define INDEX_OFFSET_SHIFT 28
+#define INDEX_OFFSET_RICE_PARAM 29
+#define INDEX_MAX_EXCESS_BYTES 30
+#define INDEX_INIT_GRANPOS 38
+#define INDEX_SEEKPOINT_OFFSET 46
 
 // Skeleton decoder. Must have public interface, as we use this in the
 // skeleton encoder as well.
@@ -208,9 +213,9 @@ public:
 
   virtual bool Decode(ogg_page* page, ogg_int64_t offset);
 
-  vector<KeyFrameInfo> mDummy;
+  RangeMap mDummy;
 
-  virtual const vector<KeyFrameInfo>& GetKeyframes() {
+  virtual const RangeMap& GetSeekBlocks() {
     return mDummy;
   }
 
@@ -219,9 +224,9 @@ public:
 
   vector<ogg_packet*> mPackets;
 
-  // Maps track serialno to keyframe index, storing the keyframe indexes
+  // Maps track serialno to seekpoint index, storing the seekpoint indexes
   // as they're read from the skeleton track.
-  map<ogg_uint32_t, vector<KeyFrameInfo>*> mIndex;
+  map<ogg_uint32_t, RangeMap*> mIndex;
 
   ogg_uint32_t GetVersion() { return mVersion; }
 

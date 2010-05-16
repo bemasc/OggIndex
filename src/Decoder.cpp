@@ -60,8 +60,8 @@
 
 Decoder::Decoder(ogg_uint32_t serial) :
   mSerial(serial),
-  mStartTime(-1),
-  mEndTime(-1)
+  mInitGranulepos(-1),
+  mLastGranulepos(-1)
 {
   int ret = ogg_stream_init(&mState, mSerial);
   assert(ret == 0);
@@ -80,27 +80,19 @@ protected:
   th_dec_ctx* mCtx;
 
   ogg_int32_t mHeadersRead;
-  ogg_int64_t mPacketCount; 
 
-  bool mSetFirstGranulepos;
-
+  // Holds state for the Decode() method.  mContinuedStartOffset is
+  // the byte offset of the page on which a continued packet must have
+  // started.  If mContinuedStartOffset==-1, no packet has been observed
+  // that could possibly have held the first part of a continued packet.
+  ogg_int64_t mContinuedStartOffset;
 public:
-  ogg_int64_t mNextKeyframeThreshold; // in ms
-  ogg_int64_t mGranulepos;
-
-  // Records the packetno of the first complete non-header packet in the stream.
-  ogg_int64_t mFirstPacketno;
-
   TheoraDecoder(ogg_uint32_t serial) :
     Decoder(serial),
     mSetup(0),
     mCtx(0),
     mHeadersRead(0),
-    mPacketCount(0),
-    mSetFirstGranulepos(false),
-    mNextKeyframeThreshold(-INT_MAX),
-    mGranulepos(-1),
-    mFirstPacketno(-1)
+    mContinuedStartOffset(-1)
   {
     th_info_init(&mInfo);
     th_comment_init(&mComment);
@@ -120,84 +112,43 @@ public:
     return mHeadersRead == 3;
   }
 
-  struct Page {
-    // Offset of page in bytes.
-    ogg_int64_t offset;
-    
-    // Number of packets that start on this page.
-    int num_packets;
-  };
+  // Map from granulepos of a packet to the range of bytes required to
+  // read that packet, including all the pages spanned by the packet.
+  // For non-spanning packets, the range represents a single page.
+  RangeMap mReadRange;
 
-  struct Frame {
-    Frame(ogg_packet& packet) :
-      packetno(packet.packetno),
-      granulepos(packet.granulepos),
-      is_keyframe(th_packet_iskeyframe(&packet) != 0),
-      e_o_s(packet.e_o_s != 0) {}
-    ogg_int64_t packetno;
-    ogg_int64_t granulepos;
-    bool is_keyframe;
-    bool e_o_s;
-  };
-  
-  // List of pages in the ogg file. We use this to determine the page which
-  // a frame exists in.
-  vector<Page> mPages;
+  // Map from granulepos of a packet to the entire range of bytes
+  // required to (a) correctly decode the contents of that packet and
+  // (b) prime the decoder for decoding all subsequent packets.  The
+  // range begins at the start of the first page containing a relevant
+  // packet, and ends at the end of the page containing this packet.
+  // If a granulepos is not listed, its range is the same as the
+  // closest lower granulepos's.
+  RangeMap mDecodeRange;
 
-  // List of keyframes which are in the file.
-  vector<Frame> mFrames;
-
-  // Keypoint info which we'll write into the index packet.
-  vector<KeyFrameInfo> mKeyFrames;
-
-  virtual const vector<KeyFrameInfo>& GetKeyframes() {
-    // Construct list of keyframes from page and frame info lists.
-    // Need to determine frame start offsets and fill key points array.
-
-    if (mKeyFrames.size() > 0 || mFrames.size() == 0) {
-      return mKeyFrames;
+  virtual const RangeMap& GetSeekBlocks() {
+    if(mDecodeRange.size() > 0 || mReadRange.size() == 0) {
+      return mDecodeRange;
     }
 
-    // Packetno of the last packet which has started.
-    ogg_int64_t started_packetno = mFirstPacketno - 1;
-    // Must at least have header packets.
-    assert(started_packetno >= 2);
-    ogg_int64_t pageno = 0;
-    ogg_int64_t prev_keyframe_pageno = -INT_MAX;
-    ogg_int64_t prev_keyframe_start_time = -INT_MAX;
-    for (unsigned f=0; f<mFrames.size(); f++) {
-      Frame& frame = mFrames[f];
-      ogg_int64_t packetno = frame.packetno;
+    RangeMap::iterator target_it = mReadRange.begin();
+    RangeMap::iterator key_it = mReadRange.begin();
+    RangeMap::iterator decode_it = mDecodeRange.end();
 
-      while (pageno < mPages.size() &&
-             started_packetno + mPages[pageno].num_packets < packetno)
-      {
-        started_packetno += mPages[pageno].num_packets;
-        pageno++;  
-      } // pages
-      assert(pageno < mPages.size());
-      assert(started_packetno < packetno &&
-             started_packetno + mPages[pageno].num_packets >= packetno);
-
-      if (pageno == prev_keyframe_pageno) {
-        // Only consider the pages' first key point.
-        continue;
+    for(;target_it != mReadRange.end(); target_it++) {
+      key_it = mReadRange.lower_bound(KeyGranule(target_it->first));
+      // The range is from the start of the keyframe range to the end
+      // of the target range.
+      OffsetRange r = {key_it->second.start,target_it->second.end};
+      if (mDecodeRange.size() > 0 && 
+           (decode_it->second.start != r.start ||
+            decode_it->second.end != r.end)) {
+        decode_it = mDecodeRange.insert(decode_it,
+                        RangePair(target_it->first, r));
       }
+    }
 
-      KeyFrameInfo k(mPages[pageno].offset,
-                     StartTime(frame.granulepos));
-
-      // Only add the keyframe to the list if it's far enough after the
-      // previous keyframe.
-      if (k.mTime > prev_keyframe_start_time + gOptions.GetKeyPointInterval()) {
-        prev_keyframe_start_time = k.mTime;
-        mKeyFrames.push_back(k);
-      }
-      prev_keyframe_pageno = pageno;
-
-    } // for each frame
-
-    return mKeyFrames;
+    return mDecodeRange;
   }
 
   ogg_int64_t StartTime(ogg_int64_t granulepos) {
@@ -208,6 +159,22 @@ public:
   ogg_int64_t EndTime(ogg_int64_t granulepos) {
     return (th_granule_frame(mCtx, granulepos) + 1) * 1000 *
            mInfo.fps_denominator / mInfo.fps_numerator;
+  }
+
+  ogg_int64_t KeyGranule(ogg_int64_t granulepos) {
+    // Return the largest granulepos such that the next smaller
+    // granulepos is sufficiently old to ensure proper decoding of the
+    // argument granulepos.  This value has the high bits equal to the
+    // reference frame number, but the low bits filled with 1s.
+    int shift = mInfo.keyframe_granule_shift;
+    ogg_int64_t highmask, lowmask, output;
+    highmask = -1;
+    highmask <<= shift;
+    lowmask = -1;
+    lowmask ^= highmask;
+    output = (granulepos>>shift) - (granulepos & lowmask);
+    output = (output<<shift) | lowmask;
+    return output
   }
 
   const char* TheoraHeaderType(ogg_packet* packet) {
@@ -221,26 +188,22 @@ public:
 
   bool Decode(ogg_page* page, ogg_int64_t offset) {
     assert((ogg_uint32_t)ogg_page_serialno(page) == mSerial);
-    if (GotAllHeaders()) {
-      Page record;
-      record.num_packets = CountPacketStarts(page);
-      record.offset = offset;
-      mPages.push_back(record);
-    }
- 
+
     int ret = ogg_stream_pagein(&mState, page);
     ogg_int64_t page_granulepos = ogg_page_granulepos(page);
     assert(ret == 0);
 
+    RangeMap::iterator it = mReadRange.end();
+    ogg_int64_t end_offset = offset + page.header_len + page.body_len;
+
     ogg_packet packet;
     int num_packets = 0;
     while ((ret = ogg_stream_packetout(&mState, &packet)) != 0) {
+      num_packets++;
       if (ret == -1) {
-        cerr << "WARNING: Lost sync decoding packets on theora page "
-             << mPages.size() << endl;
+        cerr << "WARNING: Lost sync decoding packets on theora page " << endl;
         continue;
       }
-      num_packets++;
       if (!GotAllHeaders()) {
         // Read Headers...
         ret = th_decode_headerin(&mInfo,
@@ -269,106 +232,35 @@ public:
         continue;
       }      
 
-      if (mFirstPacketno == -1) {
-        mFirstPacketno = packet.packetno;
-      }
-      
-      int shift = mInfo.keyframe_granule_shift;
-      if (mGranulepos == -1) {
-      
-        // Packet should only have a granulepos if the page does.
-        assert(page_granulepos != -1 || packet.granulepos == -1);
-        assert(packet.granulepos == -1 || packet.granulepos == page_granulepos);
-      
-        // We've not yet determined the granulepos of the first (or previous)
-        // packet. Remember the packet, even if it's not a keyframe so that
-        // we can backtrack to get all packets' start time.
-        mFrames.push_back(Frame(packet));
+      OffsetRange r;
+      if (num_packets==1 && ogg_page_continued(page)) {
+        // then the first packet on this page continues a packet from
+        // the previous page.  It therefore requires both the previous
+        // page and this page in order to read it.
 
-        if (packet.granulepos == -1) {
-          // We've stored the packet, once we find one with a non -1 granulepos
-          // we can find the first packet's granulepos.
-          continue;
-        }
-        
-        // We know a packet's granulepos, use it to tag the packets buffered
-        // before it so that they have valid granulepos.
-        for (int i=(int)mFrames.size()-2; i>=0; i--) {
-          ogg_int64_t prev_granulepos = mFrames[i+1].granulepos;
-          assert(prev_granulepos != -1);
-          ogg_int64_t granulepos = -1;
-          if (mFrames[i].is_keyframe) {
-            ogg_int64_t frame = th_granule_frame(mCtx, prev_granulepos) +
-                                TheoraVersion(&mInfo,3,2,1) - 1;
-            // 3.2.0 streams store the frame index in the granule position.
-            // 3.2.1 and later store the frame count. th_granule_frame() returns
-            // the frame index, so |frame| can be 0 when we're theora version
-            // 3.2.0 or less.
-            assert(frame > 0 || !TheoraVersion(&mInfo,3,2,1));
-            granulepos = frame << shift;
-          } else {
-            // We must be offset by more than 1 frame for this to work.
-            assert((prev_granulepos & ((1 << shift) - 1)) > 0);
-            granulepos = prev_granulepos - 1;
-          }
-          // This frame's granule number should be one less than the previous.
-          assert(th_granule_frame(mCtx, granulepos) ==
-                 th_granule_frame(mCtx, prev_granulepos) - 1);
-          mFrames[i].granulepos = granulepos;
-        }
-        // Now all packets have a known time.
-        assert(mStartTime == -1);
-        mStartTime = StartTime(mFrames.front().granulepos);
-        assert(mStartTime >= 0);
-        mEndTime = EndTime(mFrames.back().granulepos);
-        assert(mEndTime >= mStartTime);
-
-        // Print/log packets before we remove non-keyframe packets.
-        for (unsigned i=0; i<mFrames.size(); i++) {
-          DumpPacket(mFrames[i]);
-        }
-
-        // Remove the frames that aren't keyframes.
-        for (unsigned i=0; i<mFrames.size(); i++) {
-          if (!mFrames[i].is_keyframe) {
-            mFrames.erase(mFrames.begin()+i);
-            i--;
-            continue;
-          }
-          assert(mFrames[i].is_keyframe);
-        }
-        mGranulepos = packet.granulepos;
-        continue;
-      }
-
-      // mGranulepos != -1. We know the previous packet's granulepos.
-      // This packet's granulepos is the previous one's incremented.
-      ogg_int64_t granulepos = 0;
-      bool is_keyframe = th_packet_iskeyframe(&packet) != 0;
-      if (is_keyframe) {
-        granulepos = (th_granule_frame(mCtx, mGranulepos) + 1 +
-                      TheoraVersion(&mInfo,3,2,1)) << shift;
+        assert (mContinuedStartOffset != -1);
+        r.start = mContinuedStartoffset;
       } else {
-        granulepos = mGranulepos + 1;
-        ogg_int64_t max_offset = (1 << shift) - 1;
-        assert((mGranulepos & max_offset) + 1 <= max_offset);
+        r.start = offset;
       }
-      assert(th_granule_frame(mCtx, mGranulepos) + 1 ==
-             th_granule_frame(mCtx, granulepos));
-      assert(packet.granulepos == -1 || packet.granulepos == granulepos);
-      packet.granulepos = granulepos;
-      mGranulepos = granulepos;
-      
-      Frame f(packet);
-      DumpPacket(f);
-      if (is_keyframe) {
-        mFrames.push_back(f);
+      r.end = end_offset;
+      if (it->second.start != r.start || it->second.end != r.end) {
+        // If this packet does not have the same range as the preceding
+        // packet, then add the new range to the map.
+        it = mReadRange.insert(it, RangePair(packet.granulepos,r));
       }
-      mEndTime = EndTime(mGranulepos);
     } // end while packetout.
+
     if (num_packets != ogg_page_packets(page)) {
       cerr << "WARNING: Fewer packets finished on theora page "
            << mPages.size() << " than expected." << endl;
+    }
+    if (num_packets > 0) {
+      // If any packets completed on this page, then if the next packet
+      // is continued, it must have continued from this page.  (If no
+      // packet completed on this page, then the continued packet must
+      // have started earlier.)
+      mContinuedStartOffset = offset;
     }
     return true;
   }
