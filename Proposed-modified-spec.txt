@@ -73,8 +73,8 @@ granpos. You are guaranteed to pass
 keyframes on all streams with granpos less than or equal to the seek target
 granpos while decoding up to the seek target. If you pass a page with
 granpos greater than your target for that stream, or if you reach your target
-frame without encountering a keyframe, or if you read b_max bytes beyond any
-stream's seek point without reaching your target page in the stream,
+frame without enough data to decode it correctly, or if you read b_max bytes
+beyond the next seek point in the stream without reaching your target page in the stream,
 then the index is invalid (possibly the file
 has been changed without updating the index) and you must fallback
 to a bisection search.
@@ -116,9 +116,9 @@ correct. You can consider the index invalid if any of the following are true:
    3. reading forward from the keypoint, you reach a packet with granpos greater
       than or equal to the keypoint's granpos without sufficient information to
       decode it properly
-   4. you read more than b_max bytes forward from the keypoint without
-      reaching a page from the stream containing a packet with granpos greater
-      than or equal to the keypoint's granpos
+   4. you read more than b_max bytes past a keypoint without
+      having acquired sufficient data to decode a packet with lower granpos
+      than the keypoint's
    5. you read a packet with granpos greater than its stream's
       specified maximum granpos
 
@@ -204,11 +204,12 @@ Each index packet contains the following:
 6. The (log)Rice parameter for byte offsets, as a 1-byte field.
 7. The maximum number of excess bytes that must be read, b_max,
    as an 8-byte field.
-8. The granpos with which to initialize the granpos stream as an 8-byte field.
-9. 'n' key points, each of which contain, in the following order:
+8. The offset with which to initialize the offset stream as an 8-byte field.
+9. The granpos with which to initialize the granpos stream as an 8-byte field.
+10. 'n' key points, each of which contain, in the following order:
     - the keypoint's byte offset delta, as a shifted Golomb-Rice encoded
       integer. This is the number of bytes that this keypoint is after the
-      preceeding keypoint's offset, or from the start of the segment if this
+      preceding keypoint's offset, or from the start of the segment if this
       is the first keypoint. The keypoint's byte offset is therefore the sum
       of the byte-offset-deltas of all the keypoints which come before it.
     - the granpos delta for this keypoint as a shifted Golomb-Rice encoded
