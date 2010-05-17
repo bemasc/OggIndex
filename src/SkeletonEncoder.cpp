@@ -226,10 +226,10 @@ SkeletonEncoder::ConstructIndexPackets() {
     FisboneInfo info = decoder->GetFisboneInfo();
     mGranuleposShift = info.mGranuleShift + GRANPOS_QUANT;
     vector<ogg_int64_t> gps, offsets;
-    split_rangemap(&offsets, &gps, &seekblocks);
+    split_rangemap(&offsets, &gps, &seekblocks, decoder->GetLastGranulepos());
     vector<ogg_int64_t> gps_rounded, offsets_rounded;
     round_together(&offsets_rounded, &gps_rounded, &offsets, &gps,
-                   mOffsetShift, mGranuleposShift, decoder->GetLastGranulepos());
+                   mOffsetShift, mGranuleposShift);
     ogg_int64_t b_max;
     b_max = measure_bmax(&offsets_rounded, &gps_rounded, &seekblocks);
     ogg_int64_t init_offset, init_granpos;
@@ -269,9 +269,9 @@ SkeletonEncoder::ConstructIndexPackets() {
                   mDecoders[i]->GetSerial());
     
     // Number of key points.
-    assert(keyframes.size() < UINT_MAX);
-    WriteLEUint64(packet->packet + INDEX_NUM_KEYPOINTS_OFFSET,
-                  (ogg_uint64_t)keyframes.size());
+    assert(offset_diffs.size() < UINT_MAX);
+    WriteLEUint64(packet->packet + INDEX_NUM_SEEKPOINTS_OFFSET,
+                  (ogg_uint64_t)offset_diffs.size());
     
     WriteLEInt64(packet->packet + INDEX_LAST_GRANPOS,
                                                   decoder->GetLastGranulepos());
@@ -393,7 +393,7 @@ SkeletonEncoder::CorrectOffsets() {
 
     unsigned char* p = packet->packet + INDEX_INIT_OFFSET;
     ogg_int64_t existing_offset = LEUint64(p);
-    WriteLEUint64(p, existing_offset + lengthDiff)
+    WriteLEUint64(p, existing_offset + lengthDiff);
   }
 
   // First correct the BOS packet's segment length field.

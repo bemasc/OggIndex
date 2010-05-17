@@ -3,6 +3,7 @@
 #include <vector>
 #include <map>
 #include "Decoder.hpp"
+#include <assert.h>
 
 using namespace std;
 
@@ -16,15 +17,15 @@ using namespace std;
 // second to produce two consecutive entries that are equal, the later
 // entry will be discarded, as will the corresponding entry in the other
 // vector.
-static void round_together (vector<ogg_int64_t>* first_out,
+void round_together (vector<ogg_int64_t>* first_out,
                             vector<ogg_int64_t>* second_out,
                             vector<ogg_int64_t>* first_in,
                             vector<ogg_int64_t>* second_in,
                             unsigned char shift1,
                             unsigned char shift2) {
   ogg_int64_t i, mask1, mask2, offset2, tmp1, tmp2;
-  assert(first_in.size() == second_in.size());
-  if (first_in.size() == 0) { 
+  assert(first_in->size() == second_in->size());
+  if (first_in->size() == 0) { 
     return;
   }
   mask1 = 1;
@@ -34,11 +35,11 @@ static void round_together (vector<ogg_int64_t>* first_out,
   offset2 = (offset2<<shift2) - 1; //paranoia about 32bit vs. 64bit shift
   mask2 = ~offset2;
 
-  first_out->push_back(first_in[0] & mask1);
-  second_out->push_back((second_in[0] + offset2) & mask2);
-  for(i = 1; i < first_in.size(); i++) {
-    tmp1 = first_in[i] & mask1;
-    tmp2 = (second_in[i] + offset2) & mask2;
+  first_out->push_back(first_in->at(0) & mask1);
+  second_out->push_back((second_in->at(0) + offset2) & mask2);
+  for(i = 1; i < first_in->size(); i++) {
+    tmp1 = first_in->at(i) & mask1;
+    tmp2 = (second_in->at(i) + offset2) & mask2;
     if (tmp1 > first_out->back() && tmp2 > second_out->back()) {
       first_out->push_back(tmp1);
       second_out->push_back(tmp2);
@@ -50,12 +51,12 @@ static void round_together (vector<ogg_int64_t>* first_out,
 // shifted differences and initial value.  The rounded input values must
 // be strictly increasing, because the differences are stored with 1
 // subtracted.
-static void differentiate (vector<ogg_int64_t>* differences,
+void differentiate (vector<ogg_int64_t>* differences,
                                  ogg_int64_t* initval,
                                  vector<ogg_int64_t>* values,
                                  unsigned char shift) {
   vector<ogg_int64_t>::iterator it = values->begin();
-  ogg_int64_t offset = 0, prev, tmp;
+  ogg_int64_t prev, tmp;
   *initval = *it;
   prev = (*it)>>shift;
   ++it;
@@ -70,25 +71,25 @@ static void differentiate (vector<ogg_int64_t>* differences,
 // Given a list of shifted differences, integrate them and store the result in
 // integrated.  Note that we store differences reduced by
 // 1, so we must invert that here.
-static void shift_integrate (vector<ogg_int64_t>* integrated,
+void shift_integrate (vector<ogg_int64_t>* integrated,
                              vector<ogg_int64_t>* differences,
                              unsigned char shift,
                              ogg_int64_t initval) {
-  vector<ogg_int64_t>::iterator it=differences.begin();
+  vector<ogg_int64_t>::iterator it=differences->begin();
   integrated->push_back(initval);
-  for(;it<differences.end();++it) {
-    integrated->push_back(integrated->back() + ((*it)+1)<<shift);
+  for(;it<differences->end();++it) {
+    integrated->push_back(integrated->back() + (((*it)+1)<<shift));
   }
 }
 
 // Given a RangeMap m, split out its granuleposes and offset start points
 // into two new vectors.
-static void split_rangemap(vector<ogg_int64_t>* offsets,
+void split_rangemap(vector<ogg_int64_t>* offsets,
                            vector<ogg_int64_t>* gps,
-                           RangeMap* m,
+                           RangeMap const* m,
                            ogg_int64_t max_granpos) {
-  RangeMap::iterator it = m->begin();
-  for(;it < m->end(); ++it) {
+  RangeMap::const_iterator it = m->begin();
+  for(;it != m->end(); ++it) {
     if (it->second.start > offsets->back()) {
       gps->push_back(it->first);
       offsets->push_back(it->second.start);
@@ -102,7 +103,7 @@ static void split_rangemap(vector<ogg_int64_t>* offsets,
 
 // Given vectors of granulepos and start offsets, as well as the global
 // b_max, construct the tightest possible safe RangeMap
-static void merge_vectors(RangeMap * m,
+void merge_vectors(RangeMap * m,
                           vector<ogg_int64_t>*offsets,
                           vector<ogg_int64_t>*gps,
                           ogg_int64_t b_max) {
@@ -110,26 +111,26 @@ static void merge_vectors(RangeMap * m,
   assert(m->size() == 0);
   RangeMap::iterator it = m->end();
   for(i=0; i+1 < gps->size(); i++) {
-    OffsetRange r={offsets[i], offsets[i+1]+b_max};
-    it = m->insert(it,RangePair(gps[i],r));
+    OffsetRange r={offsets->at(i), offsets->at(i+1)+b_max};
+    it = m->insert(it,RangePair(gps->at(i),r));
   }
 }
 
 // Return the number of bytes you must read beyond offsets[i+1] when looking
 // for a granpos between gps[i] and gps[i+1] in order to ensure that you have
 // captured sufficient data.
-static ogg_int64_t measure_bmax(vector<ogg_int64_t>* offsets,
+ogg_int64_t measure_bmax(vector<ogg_int64_t>* offsets,
                                 vector<ogg_int64_t>* gps,
-                                RangeMap* m) {
-  RangeMap::iterator it;
+                                RangeMap const* m) {
+  RangeMap::const_iterator it;
   ogg_int64_t i = 0, b_max = 0;
-  while (gps[i] <= m->begin()->first) {
+  while (gps->at(i) <= m->begin()->first) {
     ++i;
   }
   assert(gps->size() == offsets->size());
   for(; i < gps->size(); i++) {
-    it = m->lower_bound(gps[i]-1);
-    b_max = max(b_max, it->second.end - offsets[i]);
+    it = m->lower_bound(gps->at(i)-1);
+    b_max = max(b_max, it->second.end - offsets->at(i));
   }
   return b_max;
 }

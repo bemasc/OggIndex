@@ -46,6 +46,9 @@
 
 using namespace std;
 
+// Minimum possible size of a compressed seek point, in bits.
+#define MIN_SEEK_POINT_SIZE 2
+
 // Magic bytes for index packet.
 #define HEADER_MAGIC "index"
 #define HEADER_MAGIC_LEN (sizeof(HEADER_MAGIC) / sizeof(HEADER_MAGIC[0]))
@@ -94,9 +97,9 @@ struct OffsetRange {
 
   // Offset of end of range in bytes.
   // Special value end==-1 indicates that the endpoint is not yet
- // known.
+  // known.
   ogg_int64_t end;
-}
+};
 
 // A pair of a granulepos and a range of bytes
 typedef pair<ogg_int64_t,OffsetRange> RangePair;
