@@ -7,18 +7,18 @@ using namespace std;
 
 /* This file contains methods related to reading and writing Golomb-Rice codes*/
 
-static ogg_uint64_t rice_bits_required(ogg_uint64_t value,
+static ogg_int64_t rice_bits_required(ogg_int64_t value,
                                       unsigned char rice_param) {
-  ogg_uint64_t cutoff=1<<rice_param, bits=1+rice_param;
+  ogg_int64_t cutoff=1<<rice_param, bits=1+rice_param;
   return bits + value/cutoff;
 }
 
 // Returns the number of bytes needed to store n bits.
-static ogg_uint64_t tobytes(ogg_uint64_t n) {
+static ogg_int64_t tobytes(ogg_int64_t n) {
   return (n+7)/8;
 }
 
-static ogg_uint64_t rice_total_bits(vector<ogg_int64_t>* values,
+static ogg_int64_t rice_total_bits(vector<ogg_int64_t>* values,
                                     unsigned char rice_param) {
   ogg_int64_t total=0, i=0;
   for(;i < values->size(); i++) {
@@ -63,8 +63,8 @@ static unsigned char optimal_rice_parameter(vector<ogg_int64_t>* values) {
 // This function encodes value according to rice_param and appends the
 // result to bitstore. 
 static void rice_write_one(vector<char>* bitstore,
-                            ogg_uint64_t value, unsigned char rice_param) {
-  ogg_uint64_t cutoff=1<<rice_param;
+                            ogg_int64_t value, unsigned char rice_param) {
+  ogg_int64_t cutoff=1<<rice_param;
   while (value >= cutoff) {
     bitstore->push_back(true);
     value -= cutoff;
@@ -79,10 +79,10 @@ static void rice_write_one(vector<char>* bitstore,
 
 // Read one value from the rice-coded stream. Return the value, and
 // leave the iterator pointing to the first bit of the next value.
-static ogg_uint64_t rice_read_one(vector<char>::iterator it,
+static ogg_int64_t rice_read_one(vector<char>::iterator it,
                                   unsigned char rice_param) {
-  ogg_uint64_t output=0;
-  ogg_uint64_t cutoff = 1<<rice_param;
+  ogg_int64_t output=0;
+  ogg_int64_t cutoff = 1<<rice_param;
   while(*it){
     output += cutoff;
     ++it;
@@ -110,11 +110,11 @@ static void expand_bytes(vector<char>* bits,
 // allocated to fit all of bits.  Unused bits in the final byte will
 // be set to zero.
 static void squeeze_bits(unsigned char* p, vector<char> bits) {
-  ogg_uint64_t i, j, n=bits.size()/8, L=bits.size();
+  ogg_int64_t i, j, n=bits.size()/8, L=bits.size();
   for(i=0;i<=n;i++) {
     *(p+i) = 0;
     for(j=7;j>=0;j--) {
-      ogg_uint64_t q = 8*i+(7-j);
+      ogg_int64_t q = 8*i+(7-j);
       if (q<L){
         *(p+i) |= bits[q]<<j;
       }
@@ -125,16 +125,16 @@ static void squeeze_bits(unsigned char* p, vector<char> bits) {
 // Given two interleaved rice-coded streams stored packed
 // in num_bytes starting at p, this function decodes both, storing values
 // into first and second.
-void rice_read_alternate(vector<ogg_uint64_t>* first,
-                         vector<ogg_uint64_t>* second,
+static void rice_read_alternate(vector<ogg_int64_t>* first,
+                         vector<ogg_int64_t>* second,
                          unsigned char* p,
-                         ogg_uint64_t num_bytes,
-                         ogg_uint64_t num_pairs,
+                         ogg_int64_t num_bytes,
+                         ogg_int64_t num_pairs,
                          unsigned char rice_first,
                          unsigned char rice_second) {
   vector<char> bits;
   expand_bytes(&bits, p, num_bytes);
-  ogg_uint64_t i=0;
+  ogg_int64_t i=0;
   vector<char>::iterator it = bits.begin();
   while (i < num_pairs) {
     first->push_back(rice_read_one(it, rice_first));
@@ -144,8 +144,8 @@ void rice_read_alternate(vector<ogg_uint64_t>* first,
 
 // Packs two streams of values into an interleaved Rice-coded block of bits
 static void rice_encode_alternate(vector<char>* bits,
-                           vector<ogg_uint64_t>* first,
-                           vector<ogg_uint64_t>* second,
+                           vector<ogg_int64_t>* first,
+                           vector<ogg_int64_t>* second,
                            unsigned char rice_first,
                            unsigned char rice_second) {
   ogg_int64_t i;

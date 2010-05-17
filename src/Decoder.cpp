@@ -54,14 +54,15 @@
 #include "Options.hpp"
 #include "Utils.hpp"
 #include "SkeletonEncoder.hpp"
+#include "VectorUtils.hpp"
+#include "RiceCode.hpp"
 
 // Need to index keyframe if we've not seen 1 in 64K.
 #define MIN_KEYFRAME_OFFSET (64 * 1024)
 
 Decoder::Decoder(ogg_uint32_t serial) :
   mSerial(serial),
-  mInitGranulepos(-1),
-  mLastGranulepos(-1)
+  mLastGranulepos(0)
 {
   int ret = ogg_stream_init(&mState, mSerial);
   assert(ret == 0);
@@ -88,8 +89,7 @@ protected:
   ogg_int64_t mContinuedStartOffset;
   
   // mCurrentBackref is the number of previous packets required to decode the
-  // most recently observed packet.  Together with mCurrentPacket it describes
-  // the granulepos of the most recently seen packet
+  // most recently observed packet.
   ogg_int64_t mCurrentBackref;
   // mMaxBackref is the maximum backref, 2^(granuleshift) - 1.
   ogg_int64_t mMaxBackref;
@@ -181,7 +181,7 @@ public:
     lowmask ^= highmask;
     output = (granulepos>>shift) - (granulepos & lowmask);
     output = (output<<shift) | lowmask;
-    return output
+    return output;
   }
 
   const char* TheoraHeaderType(ogg_packet* packet) {
@@ -201,7 +201,7 @@ public:
     assert(ret == 0);
 
     RangeMap::iterator it = mReadRange.end();
-    ogg_int64_t end_offset = offset + page.header_len + page.body_len;
+    ogg_int64_t end_offset = offset + page->header_len + page->body_len;
 
     ogg_packet packet;
     int num_packets = 0;
@@ -228,7 +228,6 @@ public:
           assert(mCtx != NULL);
           mMaxBackref = (1<<mInfo.keyframe_granule_shift) - 1;
           mCurrentBackref = mMaxBackref;
-          mCurrentPacketnum = 0;
         }
         if (gOptions.GetDumpPackets()) {
           cout << "[T] ver="
@@ -249,7 +248,7 @@ public:
         // page and this page in order to read it.
 
         assert (mContinuedStartOffset != -1);
-        r.start = mContinuedStartoffset;
+        r.start = mContinuedStartOffset;
       } else {
         r.start = offset;
       }
@@ -276,7 +275,7 @@ public:
 
     if (num_packets != ogg_page_packets(page)) {
       cerr << "WARNING: Fewer packets finished on theora page "
-           << mPages.size() << " than expected." << endl;
+           << "than expected." << endl;
     }
     if (num_packets > 0) {
       // If any packets completed on this page, then if the next packet
@@ -288,19 +287,6 @@ public:
     mLastGranulepos = page_granulepos;
     return true;
   }
-
-  void DumpPacket(Frame& f) {
-    if (gOptions.GetDumpPackets() ||
-        (f.is_keyframe && gOptions.GetDumpKeyPackets()))
-    {
-      cout << "[T] " << (f.is_keyframe ? "keyframe" : "frame")
-           << " time_ms=[" << StartTime(f.granulepos) << ","
-           << EndTime(f.granulepos) << "] granulepos=" << f.granulepos
-           << " packetno=" << f.packetno
-           << (f.e_o_s ? " eos" : "")
-           << endl;
-    }
-  }  
 
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) {
     return (!GotAllHeaders()) ? -1 : EndTime(granulepos);
@@ -322,6 +308,7 @@ public:
 
 };
 
+/*
 class VorbisDecoder : public Decoder {
 public:
 
@@ -480,7 +467,9 @@ private:
   vorbis_dsp_state mDsp;
   vorbis_block mBlock;
 };
+*/
 
+/*
 #ifdef HAVE_KATE
 class KateDecoder : public Decoder {
 protected:
@@ -830,7 +819,9 @@ public:
 
 };
 #endif
+*/
 
+/*
 SkeletonDecoder::SkeletonDecoder(ogg_uint32_t serial) :
   Decoder(serial),
   mGotAllHeaders(0),
@@ -915,7 +906,7 @@ bool SkeletonDecoder::Decode(ogg_page* page, ogg_int64_t offset) {
   }
   return true;
 }
-
+*/
 Decoder* Decoder::Create(ogg_page* page)
 {
   assert(ogg_page_bos(page));
@@ -924,7 +915,7 @@ Decoder* Decoder::Create(ogg_page* page)
       strncmp("theora", (const char*)page->body+1, 6) == 0)
   {
     return new TheoraDecoder(serialno);
-  } else if (page->body_len > 8 &&
+  } /*else if (page->body_len > 8 &&
              strncmp("vorbis", (const char*)page->body+1, 6) == 0)
   {
     return new VorbisDecoder(serialno);
@@ -938,21 +929,19 @@ Decoder* Decoder::Create(ogg_page* page)
              strncmp("fishead", (const char*)page->body, 8) == 0)
   {
     return new SkeletonDecoder(serialno);
-  }
+  }*/
   return 0;
 }
 
-bool DecodeIndex(KeyFrameIndex& index, ogg_packet* packet) {
+bool DecodeIndex(SeekBlockIndex& index, ogg_packet* packet) {
   assert(IsIndexPacket(packet));
   ogg_uint32_t serialno = LEUint32(packet->packet + INDEX_SERIALNO_OFFSET);
-  ogg_int64_t numKeyPoints = LEUint64(packet->packet + INDEX_NUM_KEYPOINTS_OFFSET);
-  ogg_int64_t time_denom = LEInt64(packet->packet + INDEX_TIME_DENOM_OFFSET);
-  ogg_int64_t time_multiplier = 1000;
+  ogg_int64_t numSeekPoints = LEUint64(packet->packet + INDEX_NUM_SEEKPOINTS_OFFSET);
 
   // Ensure that the packet's not smaller or significantly larger than
   // we expect. These cases denote a malicious or invalid num_key_points
   // field.
-  ogg_int64_t min_packet_size = INDEX_KEYPOINT_OFFSET + numKeyPoints * MIN_KEY_POINT_SIZE;
+  ogg_int64_t min_packet_size = INDEX_SEEKPOINT_OFFSET + (numSeekPoints * MIN_SEEK_POINT_SIZE)/8;
   if (packet->bytes < min_packet_size) {
     // Packet is less than the theoretical minimum size. This means that the
     // num_key_points field is too large for the packet to possibly contain as
@@ -961,52 +950,43 @@ bool DecodeIndex(KeyFrameIndex& index, ogg_packet* packet) {
     cerr << "WARNING: Possibly malicious number of key points reported in index packet." << endl;
     return false;
   }
-  ogg_int64_t max_packet_size = INDEX_KEYPOINT_OFFSET + numKeyPoints * MAX_KEY_POINT_SIZE;
-  if (max_packet_size > INT_MAX) {
-    cerr << "ERROR: I can't handle index sizes greater than 2^32." << endl;
-    return false;
-  }
 
-  if (time_denom == 0) {
-    cerr << "WARNING: Index packet for stream " << serialno
-         << " has 0 timestamp denominator." << endl;
-    return false;
-  }
+  unsigned char offset_rice_param, gp_rice_param, offset_shift, gp_shift;
+  gp_shift = *(packet->packet + INDEX_GRANPOS_SHIFT);
+  gp_rice_param = *(packet->packet + INDEX_GRANPOS_RICE_PARAM);
+  offset_shift = *(packet->packet + INDEX_OFFSET_SHIFT);
+  offset_rice_param = *(packet->packet + INDEX_OFFSET_RICE_PARAM);
+  ogg_int64_t b_max, init_offset, init_gp;
+  b_max = LEInt64(packet->packet + INDEX_MAX_EXCESS_BYTES);
+  init_offset = LEInt64(packet->packet + INDEX_INIT_OFFSET);
+  init_gp = LEInt64(packet->packet + INDEX_INIT_GRANPOS);
 
-  vector<KeyFrameInfo>* keypoints = new vector<KeyFrameInfo>();
-  keypoints->reserve((ogg_int32_t)numKeyPoints);
+  RangeMap* seekblocks = new RangeMap();
     
   /* Read in key points. */
-  unsigned char* p = packet->packet + INDEX_KEYPOINT_OFFSET;
-  ogg_int64_t offset = 0;
-  ogg_int64_t time = 0;
-  for (ogg_int64_t i=0; i<numKeyPoints; i++) {
-    assert(p < packet->packet + packet->bytes);
+  unsigned char* p = packet->packet + INDEX_SEEKPOINT_OFFSET;
 
-    ogg_int64_t offset_delta = 0;
-    p = ReadVariableLength(p, &offset_delta);
-    offset += offset_delta;
+  ogg_int64_t num_bytes = packet->bytes - INDEX_SEEKPOINT_OFFSET;
 
-    assert(p < packet->packet + packet->bytes);
-    ogg_int64_t time_delta = 0;
-    p = ReadVariableLength(p, &time_delta);
-    time += time_delta;
-    ogg_int64_t time_ms = (time * time_multiplier) / time_denom;    
-    
-    keypoints->push_back(KeyFrameInfo(offset, time_ms));
-  }
+  vector<ogg_int64_t> offset_diffs, gp_diffs;
+  rice_read_alternate(&offset_diffs, &gp_diffs, p, num_bytes, numSeekPoints,
+                      offset_rice_param, gp_rice_param);
+  vector<ogg_int64_t> offset_integrated, gp_integrated;
+  shift_integrate(&offset_integrated, &offset_diffs, offset_shift, init_offset);
+  shift_integrate(&gp_integrated, &gp_diffs, gp_shift, init_gp);
+  merge_vectors(seekblocks, &offset_integrated, &gp_integrated, b_max);
+
+  index[serialno] = seekblocks;
   
-  index[serialno] = keypoints;
-  
-  assert(index[serialno] == keypoints);
+  assert(index[serialno] == seekblocks);
   
   return true;
 }
 
-void ClearKeyframeIndex(KeyFrameIndex& index) {
-  KeyFrameIndex::iterator itr = index.begin();
+void ClearSeekblockIndex(SeekBlockIndex& index) {
+  SeekBlockIndex::iterator itr = index.begin();
   while (itr != index.end()) {
-    vector<KeyFrameInfo>* v = itr->second;
+    RangeMap* v = itr->second;
     delete v;
     itr++;
   }
