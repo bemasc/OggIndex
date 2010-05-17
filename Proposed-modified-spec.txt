@@ -55,24 +55,28 @@ over a network connection.
 For every content stream in an Ogg segment, the Ogg index bitstream 
 provides seek algorithms with an ordered table of "key points". A key 
 point is intrinsically associated with exactly one stream, and stores a
-byte offset o and a granpos g. This specifies that the last page containing
-information required to render all packets after granpos g begins
+byte offset o and a granule g. Note that this is a granule, not a granulepos.
+In Ogg streams, the granule is a direct integer representation of a specific
+time, whereas the granulepos encodes not only the granule but also potentially
+other information such as the keyframe distance and frame reordering.
+A keypoint with offset o and granule g specifies that the last page containing
+information required to render all packets after granule g begins
 at or after byte offset o, as offset from the beginning of the Ogg segment.
 Equivalently, no data preceding byte offset o is needed to render
-granpos g. The offset is not necessarily the first byte of a page, so you may
+granule g. The offset is not necessarily the first byte of a page, so you may
 have to scan forward, and skip pages, to find the first relevant page.
 
 The Skeleton A-mod track contains one index for each content stream in the 
 file. To seek in an Ogg file which contains keyframe indexes, first
 construct the set which contains every active streams' last keypoint which
-has granpos less than or equal to the seek granpos for that stream. Then from 
+has granule less than or equal to the seek granule for that stream. Then from 
 that set
 of key points, select the key point with the smallest byte offset. You should
-verify that the next page you encounter has a granpos less than the seek target
-granpos. You are guaranteed to pass
-keyframes on all streams with granpos less than or equal to the seek target
-granpos while decoding up to the seek target. If you pass a page with
-granpos greater than your target for that stream, or if you reach your target
+verify that the next page you encounter has a granule less than the seek target
+granule. You are guaranteed to pass
+keyframes on all streams with granule less than or equal to the seek target
+granule while decoding up to the seek target. If you pass a page with
+granule greater than your target for that stream, or if you reach your target
 frame without enough data to decode it correctly, or if you read b_max bytes
 beyond the next seek point in the stream without reaching your target page in the stream,
 then the index is invalid (possibly the file
@@ -113,14 +117,14 @@ correct. You can consider the index invalid if any of the following are true:
       length of the physical segment, or
    2. after a seek to a keypoint's offset, the next packet has offset greater than
       specified in the keypoint
-   3. reading forward from the keypoint, you reach a packet with granpos greater
-      than or equal to the keypoint's granpos without sufficient information to
+   3. reading forward from the keypoint, you reach a packet with granule greater
+      than or equal to the keypoint's granule without sufficient information to
       decode it properly
    4. you read more than b_max bytes past a keypoint without
-      having acquired sufficient data to decode a packet with lower granpos
+      having acquired sufficient data to decode a packet with lower granule
       than the keypoint's
-   5. you read a packet with granpos greater than its stream's
-      specified maximum granpos
+   5. you read a packet with granule greater than implied by its stream's
+      specified maximum granulepos
 
 You should also always check the Skeleton version header field
 to ensure your decoder correctly knows how to parse the Skeleton track. 
@@ -167,14 +171,14 @@ Before the Skeleton EOS page in the segment header pages come the
 Skeleton A-mod keyframe index packets. There should be one index packet for
 each content stream in the Ogg segment, but index packets are not required
 for a Skeleton A-mod track to be considered valid. Each keypoint in the index
-is stored in a "keypoint", which in turn stores an offset and granpos
-In order to save space, the offsets and granposes are divided (shifted)
+is stored in a "keypoint", which in turn stores an offset and granule
+In order to save space, the offsets and granules are divided (shifted)
 by a scaling coefficient, then stored as
-deltas, and then Golomb-Rice encoded. Note that it is not always safe to
-round granpos down after division: if rounding down would cause the granpos
-to move too early, then it must be rounded up.  The offset and granpos deltas
-store the difference between the keypoint's offset and granpos from the
-previous keypoint's offset and granpos. So to calculate the page offset
+deltas, and then Golomb-Rice encoded. Note that when encoding the index the
+granule must generally be rounded up, to avoid indicating that earlier samples
+could be decoded correctly from this point.  The offset and granule deltas
+store the difference between the keypoint's offset and granule from the
+previous keypoint's offset and granule. So to calculate the page offset
 of a keypoint you must sum the offset deltas of up to and including the
 keypoint in the index, and then multiply by the stream's scaling coefficient.
 
@@ -197,31 +201,32 @@ Each index packet contains the following:
 2. The serialno of the stream this index applies to, as a 4 byte field.
 3. The number of keypoints in this index packet, 'n' as a 8 byte
    unsigned integer. This can be 0.
-4. The maximum granpos of any sample in this stream as an 8 byte field.
-5. The shift to be applied to granpos, as a 1 byte field.  
-6. The (log)Rice parameter for granpos, as a 1-byte field.
+4. The maximum granulepos of any sample in this stream as an 8 byte field.
+5. The shift to be applied to granules, as a 1 byte field.  
+6. The (log)Rice parameter for granules, as a 1-byte field.
 5. The shift to be applied to byte offsets, as a 1 byte field.  
 6. The (log)Rice parameter for byte offsets, as a 1-byte field.
 7. The maximum number of excess bytes that must be read, b_max,
    as an 8-byte field.
 8. The offset with which to initialize the offset stream as an 8-byte field.
-9. The granpos with which to initialize the granpos stream as an 8-byte field.
+9. The granule with which to initialize the granule stream as an 8-byte field.
 10. 'n' key points, each of which contain, in the following order:
     - the keypoint's byte offset delta, as a shifted Golomb-Rice encoded
       integer. This is the number of bytes that this keypoint is after the
       preceding keypoint's offset, or from the start of the segment if this
       is the first keypoint. The keypoint's byte offset is therefore the sum
       of the byte-offset-deltas of all the keypoints which come before it.
-    - the granpos delta for this keypoint as a shifted Golomb-Rice encoded
-      integer. This is the difference from the previous keypoint's granpos
-      value. The keypoint's granpos is therefore the sum of
-      all the granpos deltas up to and including the keypoint's.
+    - the granule delta for this keypoint as a shifted Golomb-Rice encoded
+      integer. This is the difference from the previous keypoint's granule
+      value. The keypoint's granule is therefore the sum of
+      all the granule deltas up to and including the keypoint's.
 
 The key points are stored in increasing order by offset (and thus by 
-granpos as well).
+granule as well).
 
-The granpos offsets stored in keypoints are relative to the initializer granpos,
-which may be negative.  The first offset is computed by adding the first delta
+The granules and offsets stored in keypoints are computed starting with the
+initializers specified in fields 8 and 9,
+which may be negative.  The second value is computed by adding the first delta
 to the initializer.
 
 The byte offsets stored in keypoints are relative to the start of the Ogg
@@ -238,8 +243,8 @@ including at most one key point per every 64KB of data, or every 2000ms,
 whichever is least frequent. 
 
 The duration of the Ogg segment may be computed from the indicated maximum
-granpos value of each stream.  The segment lasts until the latest time
-computed from these granpos. The duration is computed by subtracting from that
+granulepos value of each stream.  The segment lasts until the latest time
+computed from these granulepos. The duration is computed by subtracting from that
 time the indicated time from the first decodable packet in the stream.  Note
 that the duration of the segment depends on which streams are being played. A
 player that cannot parse a stream cannot account for its effect on duration.
