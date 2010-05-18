@@ -65,9 +65,9 @@ using namespace std;
 // settings are coupled, with similar error in both time and space.
 
 // Temporal quantization of 16 samples  FIXME: Should be in terms of time.
-#define GRANPOS_QUANT (4)
+#define GRANULE_ROUNDOFF (4)
 // Spatial granularity of 64 Kibibytes
-#define OFFSET_QUANT (16)
+#define OFFSET_ROUNDOFF (16)
 
 static bool
 IsIndexable(Decoder* decoder) {
@@ -107,8 +107,8 @@ SkeletonEncoder::SkeletonEncoder(DecoderMap& decoders,
     mOldSkeletonLength(oldSkeletonLength),
     mPacketCount(0),
     mContentOffset(contentOffset),
-    mGranuleposShift(0),
-    mOffsetShift(OFFSET_QUANT)
+    mGranuleRoundoff(GRANULE_ROUNDOFF),
+    mOffsetRoundoff(OFFSET_ROUNDOFF)
 {
   DecoderMap::iterator itr = decoders.begin();
   while (itr != decoders.end()) {
@@ -224,24 +224,26 @@ SkeletonEncoder::ConstructIndexPackets() {
     const RangeMap& seekblocks = decoder->GetSeekBlocks();
     
     FisboneInfo info = decoder->GetFisboneInfo();
-    mGranuleposShift = info.mGranuleShift + GRANPOS_QUANT;
-    vector<ogg_int64_t> gps, offsets;
-    split_rangemap(&offsets, &gps, &seekblocks, decoder->GetLastGranulepos());
-    vector<ogg_int64_t> gps_rounded, offsets_rounded;
-    round_together(&offsets_rounded, &gps_rounded, &offsets, &gps,
-                   mOffsetShift, mGranuleposShift);
+    vector<ogg_int64_t> granules, offsets;
+    split_rangemap(&offsets, &granules, &seekblocks,
+                    decoder->GranuleposToGranule(decoder->GetLastGranulepos()));
+    vector<ogg_int64_t> granules_rounded, offsets_rounded;
+    round_together(&offsets_rounded, &granules_rounded, &offsets, &granules,
+                   mOffsetRoundoff, mGranuleRoundoff);
     ogg_int64_t b_max;
-    b_max = measure_bmax(&offsets_rounded, &gps_rounded, &seekblocks);
-    ogg_int64_t init_offset, init_granpos;
-    vector<ogg_int64_t> gp_diffs, offset_diffs;
-    differentiate(&offset_diffs, &init_offset, &offsets_rounded, mOffsetShift);
-    differentiate(&gp_diffs, &init_granpos, &gps_rounded, mGranuleposShift);
-    unsigned char offset_rice_param, gp_rice_param;
+    b_max = measure_bmax(&offsets_rounded, &granules_rounded, &seekblocks);
+    ogg_int64_t init_offset, init_granule;
+    vector<ogg_int64_t> granule_diffs, offset_diffs;
+    differentiate(&offset_diffs, &init_offset, &offsets_rounded,
+                                                               mOffsetRoundoff);
+    differentiate(&granule_diffs, &init_granule, &granules_rounded,
+                                                              mGranuleRoundoff);
+    unsigned char offset_rice_param, granule_rice_param;
     offset_rice_param = optimal_rice_parameter(&offset_diffs);
-    gp_rice_param = optimal_rice_parameter(&gp_diffs);
+    granule_rice_param = optimal_rice_parameter(&granule_diffs);
     vector<char> bits;
-    rice_encode_alternate(&bits, &offset_diffs, &gp_diffs,
-                          offset_rice_param, gp_rice_param);
+    rice_encode_alternate(&bits, &offset_diffs, &granule_diffs,
+                          offset_rice_param, granule_rice_param);
     
     const ogg_int32_t uncompressed_size = INDEX_SEEKPOINT_OFFSET +
                                   (int)seekblocks.size() * 16;
@@ -276,15 +278,15 @@ SkeletonEncoder::ConstructIndexPackets() {
     WriteLEInt64(packet->packet + INDEX_LAST_GRANPOS,
                                                   decoder->GetLastGranulepos());
 
-    WriteUint8(packet->packet + INDEX_GRANPOS_SHIFT, mGranuleposShift);
-    WriteUint8(packet->packet + INDEX_GRANPOS_RICE_PARAM, gp_rice_param);
-    WriteUint8(packet->packet + INDEX_OFFSET_SHIFT, mOffsetShift);
+    WriteUint8(packet->packet + INDEX_GRANULE_ROUNDOFF, mGranuleRoundoff);
+    WriteUint8(packet->packet + INDEX_GRANULE_RICE_PARAM, granule_rice_param);
+    WriteUint8(packet->packet + INDEX_OFFSET_ROUNDOFF, mOffsetRoundoff);
     WriteUint8(packet->packet + INDEX_OFFSET_RICE_PARAM, offset_rice_param);
 
     WriteLEInt64(packet->packet + INDEX_MAX_EXCESS_BYTES, b_max);
 
     WriteLEInt64(packet->packet + INDEX_INIT_OFFSET, init_offset);
-    WriteLEInt64(packet->packet + INDEX_INIT_GRANPOS, init_granpos);
+    WriteLEInt64(packet->packet + INDEX_INIT_GRANULE, init_granule);
 
     p = packet->packet + INDEX_SEEKPOINT_OFFSET;
 

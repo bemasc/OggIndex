@@ -23,28 +23,46 @@ void round_together (vector<ogg_int64_t>* first_out,
                             vector<ogg_int64_t>* second_in,
                             unsigned char shift1,
                             unsigned char shift2) {
-  ogg_int64_t i, mask1, mask2, offset2, tmp1, tmp2;
+  ogg_int64_t i, mask1, offset1, mask2, offset2, tmp1, tmp2;
   assert(first_in->size() == second_in->size());
   if (first_in->size() == 0) { 
     return;
   }
-  mask1 = 1;
-  mask1 = ~((mask1<<shift1) - 1);
+  offset1 = 1;
+  offset1 = ((offset1<<shift1) - 1); //paranoia about 32bit vs. 64bit shift
+  mask1 = ~offset1;
   
   offset2 = 1;
-  offset2 = (offset2<<shift2) - 1; //paranoia about 32bit vs. 64bit shift
+  offset2 = (offset2<<shift2) - 1; 
   mask2 = ~offset2;
 
   first_out->push_back(first_in->at(0) & mask1);
-  second_out->push_back((second_in->at(0) + offset2) & mask2);
-  for(i = 1; i < first_in->size(); i++) {
+  //special exception for the first seek point: we round down the granpos,
+  //to ensure that no granpos in the stream is unseekable.  This is safe because
+  //there are no preceding granposes in this stream that could potentially
+  //get "pulled forward".
+  second_out->push_back(second_in->at(0) & mask2);
+  for(i = 1; i+1 < first_in->size(); i++) {
+    //loop runs from the second to the second-to-last
     tmp1 = first_in->at(i) & mask1;
     tmp2 = (second_in->at(i) + offset2) & mask2;
-    if (tmp1 > first_out->back() && tmp2 > second_out->back()) {
-      first_out->push_back(tmp1);
-      second_out->push_back(tmp2);
+    if (tmp1 > first_out->back()) {
+      if (tmp2 > second_out->back()) { // Add a new seek point
+        first_out->push_back(tmp1);
+        second_out->push_back(tmp2);
+      } else {  // refine an existing seek point
+        assert(tmp2 == second_out->back());
+        first_out->pop_back();
+        first_out->push_back(tmp1);
+      }
     }
   }
+  //special exception for the last seek point: we round up the offset,
+  //to ensure that every valid seek has an upper bound.
+  tmp1 = (first_in->at(i) + offset1) & mask1;
+  tmp2 = (second_in->at(i) + offset2) & mask2;
+  first_out->push_back(tmp1);
+  second_out->push_back(tmp2);
 }
 
 // Given values that have already been rounded but not shifted, compute
@@ -60,7 +78,7 @@ void differentiate (vector<ogg_int64_t>* differences,
   *initval = *it;
   prev = (*it)>>shift;
   ++it;
-  while(it < values->end()) {
+  while(it != values->end()) {
     tmp = (*it)>>shift;
     differences->push_back((tmp-prev)-1);
     prev = tmp;
@@ -88,17 +106,21 @@ void split_rangemap(vector<ogg_int64_t>* offsets,
                            vector<ogg_int64_t>* gps,
                            RangeMap const* m,
                            ogg_int64_t max_granpos) {
+  if (m->size() == 0) {
+    return;
+  }
   RangeMap::const_iterator it = m->begin();
+  ogg_int64_t last_end = 0;
   for(;it != m->end(); ++it) {
-    if (it->second.start > offsets->back()) {
+    if (offsets->size() == 0 || it->second.start > offsets->back()) {
       gps->push_back(it->first);
       offsets->push_back(it->second.start);
     }
+    last_end = it->second.end;
   }
   // Add one more point at the end, to ensure finite b_max.
-  --it;
   gps->push_back(max_granpos+1);
-  offsets->push_back(it->second.end);
+  offsets->push_back(last_end);
 }
 
 // Given vectors of granulepos and start offsets, as well as the global
@@ -122,12 +144,12 @@ void merge_vectors(RangeMap * m,
 ogg_int64_t measure_bmax(vector<ogg_int64_t>* offsets,
                                 vector<ogg_int64_t>* gps,
                                 RangeMap const* m) {
+  assert(offsets->size() == gps->size());
   RangeMap::const_iterator it;
   ogg_int64_t i = 0, b_max = 0;
-  while (gps->at(i) <= m->begin()->first) {
+  while (i < gps->size() && gps->at(i) <= m->begin()->first) {
     ++i;
   }
-  assert(gps->size() == offsets->size());
   for(; i < gps->size(); i++) {
     it = m->lower_bound(gps->at(i)-1);
     b_max = max(b_max, it->second.end - offsets->at(i));

@@ -1,4 +1,4 @@
-SRC="src/Decoder.cpp src/OggIndex.cpp src/Options.cpp src/SkeletonEncoder.cpp src/Utils.cpp src/Validate.cpp"
+SRC="src/Decoder.cpp src/OggIndex.cpp src/Options.cpp src/SkeletonEncoder.cpp src/Utils.cpp src/RiceCode.cpp src/VectorUtils.cpp" # src/Validate.cpp"
 
 if test -x `which pkg-config`
 then

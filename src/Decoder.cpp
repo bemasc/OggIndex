@@ -119,39 +119,52 @@ public:
     return mHeadersRead == 3;
   }
 
-  // Map from granulepos of a packet to the range of bytes required to
+  // Map from granule of a packet to the range of bytes required to
   // read that packet, including all the pages spanned by the packet.
   // For non-spanning packets, the range represents a single page.
   RangeMap mReadRange;
 
-  // Map from granulepos of a packet to the entire range of bytes
+  // Map from granule of a packet to the entire range of bytes
   // required to (a) correctly decode the contents of that packet and
   // (b) prime the decoder for decoding all subsequent packets.  The
   // range begins at the start of the first page containing a relevant
-  // packet, and ends at the end of the page containing this packet.
-  // If a granulepos is not listed, its range is the same as the
-  // closest lower granulepos's.
+  // packet, and ends at the end of the page on which the packet ends.
+  // If a granule is not listed, its range is the same as the
+  // closest lower granule's.
   RangeMap mDecodeRange;
+
+  // A vector of all the granposes that must be checked in order to
+  // compute mDecodeRange from mReadRange
+  vector<ogg_int64_t> mGranposes;
 
   virtual const RangeMap& GetSeekBlocks() {
     if(mDecodeRange.size() > 0 || mReadRange.size() == 0) {
+      cerr << "Warning: Failed to produce index." << endl;
       return mDecodeRange;
     }
 
-    RangeMap::iterator target_it = mReadRange.begin();
-    RangeMap::iterator key_it = mReadRange.begin();
+    vector<ogg_int64_t>::iterator granpos_it = mGranposes.begin();
+    RangeMap::iterator read_it = mReadRange.begin();
     RangeMap::iterator decode_it = mDecodeRange.end();
 
-    for(;target_it != mReadRange.end(); target_it++) {
-      key_it = mReadRange.lower_bound(KeyGranule(target_it->first));
-      // The range is from the start of the keyframe range to the end
-      // of the target range.
-      OffsetRange r = {key_it->second.start,target_it->second.end};
-      if (mDecodeRange.size() > 0 && 
+    for(;granpos_it != mGranposes.end(); ++granpos_it) {
+      ogg_int64_t key_granule = (*granpos_it)>>mInfo.keyframe_granule_shift,
+                 this_granule = GranuleposToGranule(*granpos_it);
+      if (key_granule >= mReadRange.begin()->first) {
+        // The range is from the start of the keyframe range to the end
+        // of the target range.
+        OffsetRange r;
+        read_it = mReadRange.lower_bound(key_granule);
+        r.start = read_it->second.start;
+        read_it = mReadRange.lower_bound(this_granule);
+        r.end = read_it->second.end;
+      
+        if (mDecodeRange.size() == 0 || 
            (decode_it->second.start != r.start ||
             decode_it->second.end != r.end)) {
-        decode_it = mDecodeRange.insert(decode_it,
-                        RangePair(target_it->first, r));
+          decode_it = mDecodeRange.insert(decode_it,
+                        RangePair(read_it->first, r));
+        }
       }
     }
 
@@ -166,22 +179,6 @@ public:
   ogg_int64_t EndTime(ogg_int64_t granulepos) {
     return (th_granule_frame(mCtx, granulepos) + 1) * 1000 *
            mInfo.fps_denominator / mInfo.fps_numerator;
-  }
-
-  ogg_int64_t KeyGranule(ogg_int64_t granulepos) {
-    // Return the largest granulepos such that the next smaller
-    // granulepos is sufficiently old to ensure proper decoding of the
-    // argument granulepos.  This value has the high bits equal to the
-    // reference frame number, but the low bits filled with 1s.
-    int shift = mInfo.keyframe_granule_shift;
-    ogg_int64_t highmask, lowmask, output;
-    highmask = -1;
-    highmask <<= shift;
-    lowmask = -1;
-    lowmask ^= highmask;
-    output = (granulepos>>shift) - (granulepos & lowmask);
-    output = (output<<shift) | lowmask;
-    return output;
   }
 
   const char* TheoraHeaderType(ogg_packet* packet) {
@@ -255,7 +252,7 @@ public:
       r.end = end_offset;
       
       int packets_remaining = ogg_page_packets(page) - num_packets;
-      ogg_int64_t packetnum = (page_granulepos>>mInfo.keyframe_granule_shift)
+      ogg_int64_t packet_granule = GranuleposToGranule(page_granulepos)
                                                             - packets_remaining;
       if (th_packet_iskeyframe(&packet)) {
         mCurrentBackref = 0;
@@ -263,13 +260,16 @@ public:
         mCurrentBackref = min(mCurrentBackref+1, mMaxBackref);
       }
       
-      ogg_int64_t gp_estimate = (packetnum<<mInfo.keyframe_granule_shift)
-                                                              + mCurrentBackref;
+      ogg_int64_t gp_estimate =
+      ((packet_granule-mCurrentBackref)<<mInfo.keyframe_granule_shift)
+                                                              | mCurrentBackref;
       
-      if (it->second.start != r.start || it->second.end != r.end) {
+      if (mReadRange.size() == 0 ||
+                       it->second.start != r.start || it->second.end != r.end) {
         // If this packet does not have the same range as the preceding
         // packet, then add the new range to the map.
-        it = mReadRange.insert(it, RangePair(gp_estimate,r));
+        it = mReadRange.insert(it, RangePair(packet_granule,r));
+        mGranposes.push_back(gp_estimate);
       }
     } // end while packetout.
 
@@ -290,6 +290,11 @@ public:
 
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) {
     return (!GotAllHeaders()) ? -1 : EndTime(granulepos);
+  }
+
+  virtual ogg_int64_t GranuleposToGranule(ogg_int64_t granulepos) {
+    return (granulepos >> mInfo.keyframe_granule_shift)
+                                 + (granulepos & mMaxBackref);
   }
 
   virtual FisboneInfo GetFisboneInfo() {
@@ -951,15 +956,16 @@ bool DecodeIndex(SeekBlockIndex& index, ogg_packet* packet) {
     return false;
   }
 
-  unsigned char offset_rice_param, gp_rice_param, offset_shift, gp_shift;
-  gp_shift = *(packet->packet + INDEX_GRANPOS_SHIFT);
-  gp_rice_param = *(packet->packet + INDEX_GRANPOS_RICE_PARAM);
-  offset_shift = *(packet->packet + INDEX_OFFSET_SHIFT);
+  unsigned char offset_rice_param, granule_rice_param,
+                offset_roundoff, granule_roundoff;
+  granule_roundoff = *(packet->packet + INDEX_GRANULE_ROUNDOFF);
+  granule_rice_param = *(packet->packet + INDEX_GRANULE_RICE_PARAM);
+  offset_roundoff = *(packet->packet + INDEX_OFFSET_ROUNDOFF);
   offset_rice_param = *(packet->packet + INDEX_OFFSET_RICE_PARAM);
-  ogg_int64_t b_max, init_offset, init_gp;
+  ogg_int64_t b_max, init_offset, init_granule;
   b_max = LEInt64(packet->packet + INDEX_MAX_EXCESS_BYTES);
   init_offset = LEInt64(packet->packet + INDEX_INIT_OFFSET);
-  init_gp = LEInt64(packet->packet + INDEX_INIT_GRANPOS);
+  init_granule = LEInt64(packet->packet + INDEX_INIT_GRANULE);
 
   RangeMap* seekblocks = new RangeMap();
     
@@ -968,13 +974,15 @@ bool DecodeIndex(SeekBlockIndex& index, ogg_packet* packet) {
 
   ogg_int64_t num_bytes = packet->bytes - INDEX_SEEKPOINT_OFFSET;
 
-  vector<ogg_int64_t> offset_diffs, gp_diffs;
-  rice_read_alternate(&offset_diffs, &gp_diffs, p, num_bytes, numSeekPoints,
-                      offset_rice_param, gp_rice_param);
-  vector<ogg_int64_t> offset_integrated, gp_integrated;
-  shift_integrate(&offset_integrated, &offset_diffs, offset_shift, init_offset);
-  shift_integrate(&gp_integrated, &gp_diffs, gp_shift, init_gp);
-  merge_vectors(seekblocks, &offset_integrated, &gp_integrated, b_max);
+  vector<ogg_int64_t> offset_diffs, granule_diffs;
+  rice_read_alternate(&offset_diffs, &granule_diffs, p, num_bytes,
+                          numSeekPoints, offset_rice_param, granule_rice_param);
+  vector<ogg_int64_t> offset_integrated, granule_integrated;
+  shift_integrate(&offset_integrated, &offset_diffs, offset_roundoff,
+                                                                   init_offset);
+  shift_integrate(&granule_integrated, &granule_diffs, granule_roundoff,
+                                                                  init_granule);
+  merge_vectors(seekblocks, &offset_integrated, &granule_integrated, b_max);
 
   index[serialno] = seekblocks;
   

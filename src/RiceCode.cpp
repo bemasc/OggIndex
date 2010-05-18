@@ -71,10 +71,9 @@ void rice_write_one(vector<char>* bitstore,
     value -= cutoff;
   }
   bitstore->push_back(false);
-  rice_param--;
-  while (rice_param >= 0) {
-    bitstore->push_back((bool)(value&(1<<rice_param)));
+  while (rice_param > 0) {
     rice_param--;
+    bitstore->push_back((bool)(value&(1<<rice_param)));
   }
 }
 

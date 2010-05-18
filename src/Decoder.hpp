@@ -101,12 +101,12 @@ struct OffsetRange {
   ogg_int64_t end;
 };
 
-// A pair of a granulepos and a range of bytes
+// A pair of a granule and a range of bytes
 typedef pair<ogg_int64_t,OffsetRange> RangePair;
 
-// A map from granulepos to byte ranges.  If a range is not specified
-// for a granulepos g, the range associated with g
-// is the one mapped to the largest granulepos less than g.
+// A map from granules to byte ranges.  If a range is not specified
+// for a granule g, the range associated with g
+// is the one mapped to the next lower granule.
 typedef map<ogg_int64_t,OffsetRange> RangeMap;
 
 // Maps a track's serialno to its seek range map.
@@ -168,6 +168,12 @@ public:
   ogg_int64_t GetEndTime() { return GranuleposToTime(mLastGranulepos); }
   ogg_int64_t GetLastGranulepos() { return mLastGranulepos; }
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) = 0;
+  virtual ogg_int64_t GranuleposToGranule(ogg_int64_t granulepos) {
+    ogg_int64_t mask = 1;
+    ogg_int32_t shift = GetFisboneInfo().mGranuleShift;
+    mask = (mask<<shift) - 1;
+    return (granulepos >> shift) + (granulepos & mask);
+  }
   ogg_uint32_t GetSerial() { return mSerial; }
 
   // Returns the info for this stream to be stored in the skeleton fisbone
@@ -188,13 +194,13 @@ typedef map<ogg_uint32_t, Decoder*> DecoderMap;
 #define INDEX_SERIALNO_OFFSET 6
 #define INDEX_NUM_SEEKPOINTS_OFFSET 10
 #define INDEX_LAST_GRANPOS 18
-#define INDEX_GRANPOS_SHIFT 26
-#define INDEX_GRANPOS_RICE_PARAM 27
-#define INDEX_OFFSET_SHIFT 28
+#define INDEX_GRANULE_ROUNDOFF 26
+#define INDEX_GRANULE_RICE_PARAM 27
+#define INDEX_OFFSET_ROUNDOFF 28
 #define INDEX_OFFSET_RICE_PARAM 29
 #define INDEX_MAX_EXCESS_BYTES 30
 #define INDEX_INIT_OFFSET 38
-#define INDEX_INIT_GRANPOS 46
+#define INDEX_INIT_GRANULE 46
 #define INDEX_SEEKPOINT_OFFSET 54
 
 // Skeleton decoder. Must have public interface, as we use this in the
@@ -210,6 +216,10 @@ public:
   virtual StreamType Type() { return TYPE_SKELETON; }
 
   virtual ogg_int64_t GranuleposToTime(ogg_int64_t granulepos) {
+    return -1;
+  }
+
+  virtual ogg_int64_t GranuleposToGranule(ogg_int64_t granulepos) {
     return -1;
   }
 
