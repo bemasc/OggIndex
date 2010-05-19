@@ -225,6 +225,10 @@ public:
 
   virtual bool Decode(ogg_page* page, ogg_int64_t offset);
 
+  virtual ogg_int64_t GetFileLength() {return mFileLength;}
+  
+  virtual ogg_int64_t GetContentOffset() {return mContentOffset;}
+
   RangeMap mDummy;
 
   virtual const RangeMap& GetSeekBlocks() {
@@ -249,6 +253,9 @@ private:
   ogg_uint16_t mVersionMajor;
   ogg_uint16_t mVersionMinor;
   ogg_uint32_t mVersion;
+  
+  ogg_int64_t mFileLength;
+  ogg_int64_t mContentOffset;
  
 };
 

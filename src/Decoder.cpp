@@ -154,11 +154,11 @@ public:
         // The range is from the start of the keyframe range to the end
         // of the target range.
         OffsetRange r;
-        read_it = mReadRange.lower_bound(key_granule);
+        read_it = --mReadRange.upper_bound(key_granule);
         r.start = read_it->second.start;
-        read_it = mReadRange.lower_bound(this_granule);
+        read_it = --mReadRange.upper_bound(this_granule);
         r.end = read_it->second.end;
-      
+        
         if (mDecodeRange.size() == 0 || 
            (decode_it->second.start != r.start ||
             decode_it->second.end != r.end)) {
@@ -277,8 +277,9 @@ public:
       cerr << "WARNING: Fewer packets finished on theora page "
            << "than expected." << endl;
     }
-    if (num_packets > 0) {
-      // If any packets completed on this page, then if the next packet
+    if (num_packets > 0 || !ogg_page_continued(page)) {
+      // If any packets completed on this page, or if this page is not continued
+      // then if the next packet
       // is continued, it must have continued from this page.  (If no
       // packet completed on this page, then the continued packet must
       // have started earlier.)
@@ -826,7 +827,7 @@ public:
 #endif
 */
 
-/*
+
 SkeletonDecoder::SkeletonDecoder(ogg_uint32_t serial) :
   Decoder(serial),
   mGotAllHeaders(0),
@@ -839,7 +840,7 @@ SkeletonDecoder::SkeletonDecoder(ogg_uint32_t serial) :
     mPackets[i]->packet = 0;
     delete mPackets[i];
   }
-  ClearKeyframeIndex(mIndex);
+  ClearSeekBlockIndex(mIndex);
 }
 
 static bool
@@ -901,6 +902,8 @@ bool SkeletonDecoder::Decode(ogg_page* page, ogg_int64_t offset) {
              << " detected. I can only handle version [3.x,4.0]" << endl;
         exit(-1);
       }
+      mFileLength = LEInt64(packet.packet + SKELETON_FILE_LENGTH_OFFSET);
+      mContentOffset = LEInt64(packet.packet + SKELETON_CONTENT_OFFSET);
     }
     
     // We've read all headers when we receive the EOS packet.
@@ -911,7 +914,7 @@ bool SkeletonDecoder::Decode(ogg_page* page, ogg_int64_t offset) {
   }
   return true;
 }
-*/
+
 Decoder* Decoder::Create(ogg_page* page)
 {
   assert(ogg_page_bos(page));
@@ -930,11 +933,11 @@ Decoder* Decoder::Create(ogg_page* page)
   {
     return new KateDecoder(serialno);
 #endif
-  } else if (page->body_len > 8 &&
+  }*/ else if (page->body_len > 8 &&
              strncmp("fishead", (const char*)page->body, 8) == 0)
   {
     return new SkeletonDecoder(serialno);
-  }*/
+  }
   return 0;
 }
 
@@ -958,10 +961,10 @@ bool DecodeIndex(SeekBlockIndex& index, ogg_packet* packet) {
 
   unsigned char offset_rice_param, granule_rice_param,
                 offset_roundoff, granule_roundoff;
-  granule_roundoff = *(packet->packet + INDEX_GRANULE_ROUNDOFF);
-  granule_rice_param = *(packet->packet + INDEX_GRANULE_RICE_PARAM);
-  offset_roundoff = *(packet->packet + INDEX_OFFSET_ROUNDOFF);
-  offset_rice_param = *(packet->packet + INDEX_OFFSET_RICE_PARAM);
+  granule_roundoff = Uint8(packet->packet + INDEX_GRANULE_ROUNDOFF);
+  granule_rice_param = Uint8(packet->packet + INDEX_GRANULE_RICE_PARAM);
+  offset_roundoff = Uint8(packet->packet + INDEX_OFFSET_ROUNDOFF);
+  offset_rice_param = Uint8(packet->packet + INDEX_OFFSET_RICE_PARAM);
   ogg_int64_t b_max, init_offset, init_granule;
   b_max = LEInt64(packet->packet + INDEX_MAX_EXCESS_BYTES);
   init_offset = LEInt64(packet->packet + INDEX_INIT_OFFSET);
@@ -983,7 +986,7 @@ bool DecodeIndex(SeekBlockIndex& index, ogg_packet* packet) {
   shift_integrate(&granule_integrated, &granule_diffs, granule_roundoff,
                                                                   init_granule);
   merge_vectors(seekblocks, &offset_integrated, &granule_integrated, b_max);
-
+  
   index[serialno] = seekblocks;
   
   assert(index[serialno] == seekblocks);
@@ -991,7 +994,7 @@ bool DecodeIndex(SeekBlockIndex& index, ogg_packet* packet) {
   return true;
 }
 
-void ClearSeekblockIndex(SeekBlockIndex& index) {
+void ClearSeekBlockIndex(SeekBlockIndex& index) {
   SeekBlockIndex::iterator itr = index.begin();
   while (itr != index.end()) {
     RangeMap* v = itr->second;

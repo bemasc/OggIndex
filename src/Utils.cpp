@@ -409,6 +409,11 @@ LEUint16(unsigned const char* p) {
   return i;  
 }
 
+unsigned char
+Uint8(unsigned const char* p) {
+  return p[0];
+}
+
 void Tokenize(const string& str,
               vector<string>& tokens,
               const string& delimiter)

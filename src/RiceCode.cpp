@@ -79,7 +79,7 @@ void rice_write_one(vector<char>* bitstore,
 
 // Read one value from the rice-coded stream. Return the value, and
 // leave the iterator pointing to the first bit of the next value.
-ogg_int64_t rice_read_one(vector<char>::iterator it,
+ogg_int64_t rice_read_one(vector<char>::iterator& it,
                                   unsigned char rice_param) {
   ogg_int64_t output=0;
   ogg_int64_t cutoff = 1<<rice_param;
@@ -101,7 +101,7 @@ void expand_bytes(vector<char>* bits,
                                unsigned char* p, ogg_int64_t n) {
   for(int i=0;i<n;i++){
     for(int j=7;j>=0;j--){
-      bits->push_back((*(p+i))&(1<<j));
+      bits->push_back(((*(p+i))&(1<<j))!=0);
     }
   }
 }
@@ -139,6 +139,7 @@ void rice_read_alternate(vector<ogg_int64_t>* first,
   while (i < num_pairs) {
     first->push_back(rice_read_one(it, rice_first));
     second->push_back(rice_read_one(it, rice_second));
+    ++i;
   }
 }
 

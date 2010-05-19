@@ -131,6 +131,7 @@ void merge_vectors(RangeMap * m,
                           ogg_int64_t b_max) {
   ogg_int64_t i;
   assert(m->size() == 0);
+  assert(offsets->size() == gps->size());
   RangeMap::iterator it = m->end();
   for(i=0; i+1 < gps->size(); i++) {
     OffsetRange r={offsets->at(i), offsets->at(i+1)+b_max};
@@ -151,7 +152,8 @@ ogg_int64_t measure_bmax(vector<ogg_int64_t>* offsets,
     ++i;
   }
   for(; i < gps->size(); i++) {
-    it = m->lower_bound(gps->at(i)-1);
+    it = m->upper_bound(gps->at(i)-1);
+    --it;
     b_max = max(b_max, it->second.end - offsets->at(i));
   }
   return b_max;

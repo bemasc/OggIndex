@@ -190,6 +190,11 @@ SkeletonEncoder::Encode() {
 
   // Adjust index packets' page offsets to account for extra file length.
   CorrectOffsets();
+  
+  // Reconstruct index pages, their contents have changed because page
+  // offsets change when we add stuff to the start of the file.
+  ConstructPages();
+
 
   return true;
 }

@@ -138,6 +138,8 @@ LEInt32(unsigned const char* p);
 ogg_uint16_t
 LEUint16(unsigned const char* p);
 
+unsigned char
+Uint8(unsigned const char* p);
 
 unsigned char*
 WriteLEUint64(unsigned char* p, const ogg_uint64_t num);

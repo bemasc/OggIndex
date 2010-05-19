@@ -219,7 +219,7 @@ int main(int argc, char** argv)
        << "% overhead" << endl;
 
   int retval = 0;
-/*  if (gOptions.GetVerifyIndex()) {
+  if (gOptions.GetVerifyIndex()) {
     cout << "Validating keyframe indexes..." << endl;
     if (!ValidateIndexedOgg(gOptions.GetOutputFilename())) {
       cerr << "FAIL: Verification of the index failed!" << endl;
@@ -227,7 +227,7 @@ int main(int argc, char** argv)
     } else {
       cout << "SUCCESS: index is valid." << endl;
     }
-  }*/
+  }
 
   return retval;
 }
