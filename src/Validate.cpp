@@ -189,7 +189,8 @@ bool ValidateIndexedOgg(const string& filename) {
     if (valid) {
       cout << decoder->Type() << "/" << serialno
            << " index is accurate, with max seek window of "
-           << MaxWindow(*v) << " bytes." << endl;
+           << MaxWindow(*v) << " bytes, compared to an optimal window of "
+           << MaxWindow(decoder->GetSeekBlocks()) << "." << endl;
     } else {
       cout << "FAIL: " << decoder->Type() << "/" << serialno
            << " index is NOT accurate." << endl;
